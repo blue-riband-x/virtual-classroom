@@ -1,0 +1,63 @@
+# AI虚拟课堂 - 后端依赖清单
+# 使用 pip install -r requirements.txt 安装
+
+# ========== FastAPI核心 ==========
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+pydantic==2.5.0
+pydantic-settings==2.1.0
+email-validator==2.1.0
+
+# ========== 数据库 ==========
+sqlalchemy[asyncio]==2.0.23
+aiomysql==0.2.0  # MySQL异步驱动（如果用MySQL）
+aiosqlite==0.9.0  # SQLite异步驱动（开发用）
+pymysql==1.1.0  # MySQL同步驱动（迁移用）
+# psycopg2-binary==2.9.9  # PostgreSQL（可选）
+
+# ========== LangChain & LangGraph ==========
+langchain==0.0.340
+langchain-core==0.1.0
+langchain-community==0.0.20
+langgraph==0.0.40
+langchain-deepseek==0.1.0  # DeepSeek集成
+
+# ========== 向量数据库 ==========
+chromadb==0.4.22
+# sentence-transformers==2.2.2  # 本地embedding（可选）
+
+# ========== HTTP & SSE ==========
+httpx==0.25.1
+sse-starlette==1.6.5  # SSE支持
+
+# ========== 认证 & 安全 ==========
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-jwt==3.3.4
+
+# ========== 阿里百炼DashScope ==========
+dashscope==1.17.0  # 阿里百炼SDK（embedding-v4）
+
+# ========== 工具库 ==========
+python-dotenv==1.0.0  # 环境变量加载
+pyyaml==6.0.1
+python-multipart==0.0.6
+itsdangerous==2.1.2
+
+# ========== 日志 ==========
+loguru==0.7.2
+structlog==23.2.0  # 结构化日志（可选）
+
+# ========== 开发依赖 ==========
+# pytest==7.4.3  # 测试
+# pytest-asyncio==0.21.1
+# httpx==0.25.1  # 测试用HTTP客户端
+
+# ========== 可选：监控 ==========
+# prometheus-fastapi-instrumentator==6.1.0
+# grafana-api==1.0.3
+
+# ========== 可选：任务队列 ==========
+# celery==5.3.4
+# redis==5.0.1  # 如果用Redis

@@ -1,0 +1,64 @@
+# ===== 环境变量 / 敏感信息 =====
+.env
+.env.local
+.env.*.local
+.mcp.json
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+*.manifest
+*.spec
+
+# ===== 数据库 =====
+*.db
+*.sqlite
+*.sqlite3
+chroma_db/
+
+# ===== Node.js =====
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ===== 构建产物 =====
+dist/
+.cache/
+
+# ===== IDE / 编辑器 =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ===== 个人工具数据 =====
+.codebuddy/
+.workbuddy/
+
+# ===== OS 生成文件 =====
+.DS_Store
+Thumbs.db
+*.tmp
+
+# ===== 日志 =====
+*.log
+logs/
+
+# ===== Java (如果 java-backend 后续开发) =====
+target/
+
+# ===== 3D 模型（体积太大，本地管理） =====
+*.glb
+model_3D/
+
+# ===== 其他 =====
+nul
