@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.javabackend.mapper.UserMapper">
+
+    <select id="findByUsername" resultType="com.example.javabackend.entity.User">
+        SELECT * FROM users WHERE username = #{username}
+    </select>
+
+    <select id="findByEmail" resultType="com.example.javabackend.entity.User">
+        SELECT * FROM users WHERE email = #{email}
+    </select>
+
+    <select id="findById" resultType="com.example.javabackend.entity.User">
+        SELECT * FROM users WHERE id = #{id}
+    </select>
+
+    <select id="findAll" resultType="com.example.javabackend.entity.User">
+        SELECT * FROM users ORDER BY xp DESC
+    </select>
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO users (username, email, password_hash, nickname, xp, level, streak,
+            total_learning_hours, xp_to_next_level, is_active, created_at, updated_at)
+        VALUES (#{username}, #{email}, #{passwordHash}, #{nickname}, 0, 1, 0, 0.0, 100, true, NOW(), NOW())
+    </insert>
+
+    <update id="update">
+        UPDATE users
+        <set>
+            <if test="nickname != null">nickname = #{nickname},</if>
+            <if test="avatarUrl != null">avatar_url = #{avatarUrl},</if>
+            <if test="xp != null">xp = #{xp},</if>
+            <if test="level != null">level = #{level},</if>
+            <if test="streak != null">streak = #{streak},</if>
+            <if test="totalLearningHours != null">total_learning_hours = #{totalLearningHours},</if>
+            <if test="xpToNextLevel != null">xp_to_next_level = #{xpToNextLevel},</if>
+            <if test="avatar3dConfig != null">avatar_3d_config = #{avatar3dConfig},</if>
+        </set>
+        WHERE id = #{id}
+    </update>
+
+    <update id="updateLastLogin">
+        UPDATE users SET last_login = NOW(), updated_at = NOW() WHERE id = #{id}
+    </update>
+
+    <select id="findTopByXp" resultType="com.example.javabackend.entity.User">
+        SELECT id, nickname, avatar_url, xp, level, streak, total_learning_hours
+        FROM users WHERE is_active = true ORDER BY xp DESC LIMIT #{limit}
+    </select>
+
+    <select id="findTopByStudyTime" resultType="com.example.javabackend.entity.User">
+        SELECT id, nickname, avatar_url, xp, level, streak, total_learning_hours
+        FROM users WHERE is_active = true ORDER BY total_learning_hours DESC LIMIT #{limit}
+    </select>
+</mapper>
