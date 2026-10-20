@@ -3,6 +3,8 @@
 .env.local
 .env.*.local
 .mcp.json
+# 本地数据库账号，示例见 application-local.example.properties
+application-local.properties
 
 # ===== Python =====
 __pycache__/

@@ -76,7 +76,9 @@ uvicorn main:app --host 127.0.0.1 --port 8000
 
 # 3. Java 主后端（:8081）
 cd java-backend/java-backend
-mvn spring-boot:run                               # 数据库账号在 application.properties
+cp src/main/resources/application-local.example.properties src/main/resources/application-local.properties
+# 打开 application-local.properties 填数据库账号（该文件不进版本库，也可以用 DB_USERNAME / DB_PASSWORD 环境变量）
+mvn spring-boot:run
 
 # 4. 前端（:8080）
 cd frontend
@@ -99,6 +101,7 @@ npm run serve
 | `DASHSCOPE_API_KEY` | 阿里百炼，用于 `embedding-v4` 生成向量 |
 | `DEEPSEEK_API_KEY` | 讲稿、大纲、判卷的文本生成 |
 | `SECRET_KEY` | 签发 JWT 的密钥 |
+| `DB_URL` / `DB_USERNAME` / `DB_PASSWORD` | Java 侧的 MySQL 连接，不设则用 `127.0.0.1:3306/virtual_classroom` 与本地配置文件里的账号 |
 
 根目录 `.env`、`backend/.env`、`.mcp.json`、数据库文件和 `model_3D/` 都在 `.gitignore` 里，不进版本库。
 
