@@ -15,6 +15,11 @@
         </div>
       </div>
       <div class="class-stats">
+        <!-- 后台生成进度指示器 -->
+        <div class="gen-indicator" v-if="generatingCount > 0" @click="scrollToGeneratingModule" title="有模块正在后台生成，点击跳转">
+          <span class="gen-indicator-icon">⏳</span>
+          <span class="gen-indicator-text">{{ generatingCount }}个模块生成中</span>
+        </div>
         <div class="stat">
           <span class="stat-icon">⏱️</span>
           <span class="stat-value">{{ formatTime(remainingTime) }}</span>
@@ -59,11 +64,12 @@
             <div class="module-num" v-else>{{ mod.module_index }}</div>
             <div class="module-info">
               <div class="module-name">{{ cleanModuleName(mod.name) }}</div>
-              <div class="module-meta">{{ mod.duration }}分钟 · {{ (mod.keyPoints || []).length }}个知识点</div>
+              <div class="module-meta" v-if="mod.content_status === 'generating'">{{ mod.gen_progress_text || '准备中...' }}</div>
+              <div class="module-meta" v-else>{{ mod.duration }}分钟 · {{ (mod.keyPoints || []).length }}个知识点</div>
             </div>
             <div class="module-status">
               <template v-if="mod.content_status === 'generating'">
-                <span class="status-badge generating">生成中</span>
+                <span class="gen-percent">{{ mod.gen_progress || 0 }}%</span>
               </template>
               <template v-else-if="mod.has_content">
                 <button
@@ -77,9 +83,12 @@
                 <button
                   class="mini-gen-btn"
                   @click.stop="generateModuleContent(mod)"
-                  :disabled="mod.content_status === 'generating'"
                 >生成课程</button>
               </template>
+            </div>
+            <!-- 生成进度条 -->
+            <div class="gen-progress-bar" v-if="mod.content_status === 'generating'">
+              <div class="gen-progress-fill" :style="{ width: (mod.gen_progress || 0) + '%' }"></div>
             </div>
           </div>
         </div>
@@ -192,7 +201,34 @@
           <div v-else class="content-text lecture-live">
             <p v-if="lectureDisplay">{{ lectureDisplay }}<span class="typing-cursor" v-if="isSpeaking">|</span></p>
             <p v-else-if="isSpeaking" class="preparing-text">⏳ AI讲师准备中...</p>
-            <p v-else-if="!currentOutline" class="waiting-text">请先从下方选择大纲进入课堂</p>
+            <!-- 大纲选择器 -->
+            <div v-else-if="!currentOutline" class="outline-selector">
+              <div v-if="loadingOutline" class="waiting-text">加载中...</div>
+              <div v-else-if="myOutlines.length === 0" class="waiting-text">
+                <p>你还没有学习大纲</p>
+                <button class="goto-plan-btn" @click="router.push('/plan')">去创建大纲</button>
+              </div>
+              <div v-else class="outline-list">
+                <h4 class="selector-title">选择一个大纲进入课堂</h4>
+                <div
+                  v-for="outline in myOutlines"
+                  :key="outline.id"
+                  class="outline-card"
+                  @click="selectOutline(outline)"
+                >
+                  <div class="outline-card-title">{{ outline.title || outline.topic }}</div>
+                  <div class="outline-card-meta">
+                    <span>{{ outline.level === 'beginner' ? '初级' : outline.level === 'intermediate' ? '中级' : '高级' }}</span>
+                    <span>{{ outline.moduleCount || (outline.modules_data || []).length }} 个模块</span>
+                    <span>{{ outline.totalDuration || 0 }} 分钟</span>
+                  </div>
+                  <div class="outline-card-modules">
+                    <span v-for="(m, i) in (outline.modules_data || []).slice(0, 3)" :key="i" class="module-tag">{{ m.name }}</span>
+                    <span v-if="(outline.modules_data || []).length > 3" class="module-tag more">+{{ (outline.modules_data || []).length - 3 }}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
             <p v-else class="waiting-text">请在左侧选择课程模块开始学习</p>
           </div>
 
@@ -217,22 +253,72 @@
         <!-- 虚拟白板 -->
         <div class="whiteboard" :class="{ expanded: whiteboardExpanded }">
           <div class="whiteboard-header">
-            <span>📝 知识板书（实时）</span>
-            <button @click="whiteboardExpanded = !whiteboardExpanded">
-              {{ whiteboardExpanded ? '收起' : '展开' }}
-            </button>
+            <span>📽️ 课堂PPT</span>
+            <div class="whiteboard-controls">
+              <button
+                v-if="aiBoards.length > 1 && currentBoardIndex > 0"
+                @click="currentBoardIndex--; manualBoardSwitchUntil = Date.now() + 3000"
+                class="board-nav-btn"
+              >◀</button>
+              <span class="board-page-info" v-if="aiBoards.length > 0">
+                {{ currentBoardIndex + 1 }}/{{ aiBoards.length }}
+              </span>
+              <button
+                v-if="aiBoards.length > 1 && currentBoardIndex < aiBoards.length - 1"
+                @click="currentBoardIndex++; manualBoardSwitchUntil = Date.now() + 3000"
+                class="board-nav-btn"
+              >▶</button>
+              <button @click="whiteboardExpanded = !whiteboardExpanded">
+                {{ whiteboardExpanded ? '收起' : '展开' }}
+              </button>
+            </div>
           </div>
           <div class="whiteboard-content">
-            <pre class="code-block" v-if="extractedCode">{{ extractedCode }}</pre>
-            <div class="knowledge-points" v-else-if="whiteboardPoints.length > 0">
-              <div class="point-item" v-for="(point, i) in whiteboardPoints" :key="point._key || i">
-                <span class="point-num">{{ i + 1 }}</span>
-                <span class="point-text">{{ point.text || point }}</span>
+            <!-- 智能体板书（优先级最高） -->
+            <div v-if="currentBoard" class="ai-board" :class="'board-type-' + currentBoard.type">
+              <div class="board-title-bar">
+                <span class="board-type-badge">{{ boardTypeLabel(currentBoard.type) }}</span>
+                <span class="board-title">{{ currentBoard.title }}</span>
+              </div>
+              <!-- 优先展示AI生成的图片 -->
+              <div class="board-image-wrapper" v-if="currentBoard.image_url && !currentBoard._img_failed">
+                <img
+                  :src="currentBoard.image_url"
+                  :alt="currentBoard.title"
+                  class="board-image"
+                  @error="onBoardImageError"
+                />
+              </div>
+              <!-- 图片未就绪或加载失败时展示文字内容 -->
+              <div class="board-body" v-else>
+                <div class="board-content-card">
+                  <h4 class="board-content-title">{{ currentBoard.title }}</h4>
+                  <div class="board-content-text">{{ currentBoard.content }}</div>
+                </div>
+              </div>
+              <!-- 板书进度条 -->
+              <div class="board-progress" v-if="aiBoards.length > 1">
+                <div
+                  v-for="(b, i) in aiBoards"
+                  :key="i"
+                  class="board-dot"
+                  :class="{ active: i === currentBoardIndex, done: i < currentBoardIndex }"
+                ></div>
               </div>
             </div>
-            <div class="whiteboard-empty" v-else>
-              <p>📋 AI讲师正在整理知识板书...</p>
-            </div>
+            <!-- 实时提炼板书（降级方案） -->
+            <template v-else>
+              <pre class="code-block" v-if="extractedCode">{{ extractedCode }}</pre>
+              <div class="knowledge-points" v-else-if="whiteboardPoints.length > 0">
+                <div class="point-item" v-for="(point, i) in whiteboardPoints" :key="point._key || i">
+                  <span class="point-num">{{ i + 1 }}</span>
+                  <span class="point-text">{{ point.text || point }}</span>
+                </div>
+              </div>
+              <div class="whiteboard-empty" v-else>
+                <p>📋 AI讲师正在整理知识板书...</p>
+              </div>
+            </template>
           </div>
         </div>
       </div>
@@ -256,11 +342,11 @@
           </div>
         </div>
 
-        <!-- AI学伴 - 增强版 -->
-        <div class="classmates enhanced">
+        <!-- AI学伴 -->
+        <div class="classmates enhanced" v-if="activeCompanions.length > 0">
           <div class="classmates-header">
             <h4>🤝 AI学伴</h4>
-            <span class="classmates-count">{{ classmates.length }} 人在线</span>
+            <span class="classmates-count">{{ activeCompanions.length }} 位学伴</span>
           </div>
           
           <!-- 学伴消息区域 -->
@@ -269,7 +355,7 @@
               v-for="(msg, idx) in companionMessages" 
               :key="idx"
               class="message-bubble"
-              :class="[msg.sender, msg.type]"
+              :class="[msg.sender === 'user' ? 'user' : 'companion', msg.type]"
             >
               <div class="msg-avatar">{{ msg.avatar }}</div>
               <div class="msg-content">
@@ -278,40 +364,70 @@
                 <div class="msg-time">{{ msg.time }}</div>
               </div>
             </div>
+            <div v-if="companionTyping" class="message-bubble companion typing">
+              <div class="msg-avatar">{{ companionTyping.avatar }}</div>
+              <div class="msg-content">
+                <div class="msg-sender">{{ companionTyping.name }}</div>
+                <div class="msg-typing">
+                  <span></span><span></span><span></span>
+                </div>
+              </div>
+            </div>
           </div>
 
           <!-- 学伴列表 -->
           <div class="classmate-list">
             <div 
-              v-for="mate in classmates" 
-              :key="mate.id"
+              v-for="comp in activeCompanions" 
+              :key="comp.type"
               class="classmate-card"
-              :class="[mate.type, mate.status]"
-              @click="toggleCompanionAction(mate)"
+              :class="[comp.type]"
             >
               <div class="classmate-avatar-wrapper">
-                <div class="classmate-avatar">{{ mate.avatar }}</div>
-                <div class="classmate-status-dot" :class="mate.status"></div>
+                <div class="classmate-avatar">{{ comp.avatar }}</div>
+                <div class="classmate-status-dot online"></div>
               </div>
               <div class="classmate-info">
-                <span class="classmate-name">{{ mate.nickname }}</span>
-                <span class="classmate-type">{{ mate.type === 'active' ? '活跃型' : '基础薄弱型' }}</span>
-              </div>
-              <div class="classmate-action">
-                <span v-if="mate.isAnswering" class="answering-indicator">✍️ 答题中...</span>
-                <span v-else-if="mate.lastAction" class="last-action">{{ mate.lastAction }}</span>
+                <span class="classmate-name">{{ comp.name }}</span>
+                <span class="classmate-type">{{ comp.typeLabel }}</span>
               </div>
             </div>
           </div>
 
-          <!-- 学伴互动按钮 -->
-          <div class="companion-actions">
-            <button class="action-btn" @click="companionAskQuestion" title="学伴提问">
-              💬 向学伴提问
-            </button>
-            <button class="action-btn" @click="companionDiscuss" title="发起讨论">
+          <!-- 讨论模式 -->
+          <div class="discussion-panel" v-if="isDiscussing">
+            <div class="discussion-header">
+              <span class="discussion-badge">💡 讨论中</span>
+              <span class="discussion-timer">{{ discussionTimeLeft }}s</span>
+              <button class="discussion-end-btn" @click="endDiscussion">结束</button>
+            </div>
+            <div class="discussion-input-row">
+              <input
+                v-model="discussionInput"
+                type="text"
+                placeholder="说点什么参与讨论..."
+                class="discussion-input"
+                @keydown.enter="sendDiscussionMessage"
+                :disabled="discussionSending"
+              />
+              <button class="discussion-send-btn" @click="sendDiscussionMessage" :disabled="discussionSending || !discussionInput.trim()">发送</button>
+            </div>
+          </div>
+
+          <!-- 互动按钮 -->
+          <div class="companion-actions" v-if="!isDiscussing">
+            <button class="action-btn primary" @click="startDiscussion" :disabled="activeCompanions.length === 0">
               💡 发起讨论
             </button>
+          </div>
+        </div>
+
+        <!-- 无学伴时的提示 -->
+        <div class="classmates empty" v-else>
+          <div class="empty-companions">
+            <span class="empty-icon">🤝</span>
+            <p>还没有选择AI学伴</p>
+            <button class="add-companion-btn" @click="router.push('/profile')">去设置学伴</button>
           </div>
         </div>
 
@@ -320,26 +436,12 @@
           <button class="tool-btn" @click="askQuestion" title="向AI助教提问">
             ❓ 提问
           </button>
-          <button class="tool-btn" @click="triggerEggDrop" title="随机彩蛋">
-            🥚 彩蛋
-          </button>
           <button class="tool-btn" @click="showHint" title="获取提示">
             💡 提示
           </button>
         </div>
       </div>
     </main>
-
-    <!-- 彩蛋弹窗 -->
-    <transition name="egg">
-      <div class="egg-modal" v-if="showEgg" @click="showEgg = false">
-        <div class="egg-content">
-          <div class="egg-icon">{{ currentEgg.title }}</div>
-          <p class="egg-text">{{ currentEgg.content }}</p>
-          <div class="egg-xp">+{{ currentEgg.xp }} XP</div>
-        </div>
-      </div>
-    </transition>
 
     <!-- 抢答模式 -->
     <transition name="rush-modal-anim">
@@ -387,13 +489,76 @@
       </div>
     </transition>
 
+    <!-- 课堂提问对话框 -->
+    <transition name="fade">
+      <div class="ask-modal" v-if="showAskDialog" @click.self="closeAskDialog">
+        <div class="ask-dialog">
+          <div class="ask-dialog-header">
+            <div class="ask-dialog-teacher">
+              <div class="ask-teacher-avatar">🤖</div>
+              <div class="ask-teacher-info">
+                <span class="ask-teacher-name">AI讲师</span>
+                <span class="ask-teacher-style">{{ teacherStyle === 'humorous' ? '幽默风趣' : teacherStyle === 'rigorous' ? '严谨认真' : '亲切耐心' }}</span>
+              </div>
+            </div>
+            <span class="ask-dialog-badge">课堂提问</span>
+          </div>
+          <div class="ask-dialog-messages" ref="askMessageContainer">
+            <div
+              v-for="(msg, idx) in askMessages"
+              :key="idx"
+              class="ask-msg"
+              :class="[msg.role]"
+            >
+              <div class="ask-msg-avatar">{{ msg.role === 'assistant' ? '🤖' : '👨‍🎓' }}</div>
+              <div class="ask-msg-content">
+                <div class="ask-msg-text">{{ msg.content }}<span class="typing-cursor" v-if="msg.streaming">|</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="ask-dialog-input">
+            <input
+              v-model="askInput"
+              type="text"
+              placeholder="输入你的问题..."
+              class="ask-input-field"
+              @keydown.enter="sendAskMessage"
+              :disabled="askStreaming"
+            />
+            <button class="ask-send-btn" @click="sendAskMessage" :disabled="askStreaming || !askInput.trim()">
+              发送
+            </button>
+          </div>
+          <div class="ask-dialog-footer">
+            <button class="continue-class-btn" @click="closeAskDialog">
+              没问题，继续上课 →
+            </button>
+          </div>
+        </div>
+      </div>
+    </transition>
+
     <!-- 底部导航 -->
     <BottomNav />
+
+    <!-- Toast通知 -->
+    <transition-group name="toast-anim" tag="div" class="toast-container">
+      <div
+        v-for="toast in toasts"
+        :key="toast.id"
+        class="toast-item"
+        :class="[toast.type]"
+        @click="removeToast(toast.id)"
+      >
+        <span class="toast-icon">{{ toast.type === 'success' ? '✅' : toast.type === 'error' ? '❌' : 'ℹ️' }}</span>
+        <span class="toast-text">{{ toast.message }}</span>
+      </div>
+    </transition-group>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, reactive, onMounted, onUnmounted } from 'vue'
+import { ref, computed, reactive, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useUserStore } from '../../stores'
 import BottomNav from '../../components/layout/BottomNav.vue'
@@ -414,6 +579,8 @@ const remainingTime = ref(42 * 60)
 // 大纲数据
 const currentOutline = ref(null)
 const loadingOutline = ref(true)
+const myOutlines = ref([]) // 用户所有大纲
+const showOutlineSelector = ref(false) // 是否显示大纲选择器
 
 // 教师风格
 const teacherStyle = computed(() => userStore.settings?.teacherStyle || 'default')
@@ -422,6 +589,8 @@ const teacherStyle = computed(() => userStore.settings?.teacherStyle || 'default
 const loadOutline = async () => {
   const outlineId = route.query.outline_id
   if (!outlineId) {
+    // 没有 outline_id，加载用户所有大纲供选择
+    await loadMyOutlines()
     loadingOutline.value = false
     return
   }
@@ -431,8 +600,15 @@ const loadOutline = async () => {
       headers: { Authorization: `Bearer ${token}` }
     })
     if (res.ok) {
-      const all = await res.json()
-      currentOutline.value = all.find(o => o.id == outlineId) || null
+      const json = await res.json()
+      // Java 后端返回 ApiResponse 格式: {code, data, message}
+      const all = Array.isArray(json) ? json : (json.data || [])
+      // modulesData 可能是 JSON 字符串，需要解析
+      const normalized = all.map(o => ({
+        ...o,
+        modules_data: typeof o.modulesData === 'string' ? JSON.parse(o.modulesData) : (o.modulesData || o.modules_data || [])
+      }))
+      currentOutline.value = normalized.find(o => o.id == outlineId) || null
       if (currentOutline.value) {
         const mods = currentOutline.value.modules_data || []
         totalModules.value = mods.length || 3
@@ -448,12 +624,68 @@ const loadOutline = async () => {
   }
 }
 
+// 加载用户所有大纲
+const loadMyOutlines = async () => {
+  try {
+    const token = localStorage.getItem('token') || ''
+    const res = await fetch('/api/v1/outline/my', {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    if (res.ok) {
+      const json = await res.json()
+      const rawList = Array.isArray(json) ? json : (json.data || [])
+      myOutlines.value = rawList.map(o => ({
+        ...o,
+        modules_data: typeof o.modulesData === 'string' ? JSON.parse(o.modulesData) : (o.modulesData || o.modules_data || [])
+      }))
+      if (myOutlines.value.length > 0) {
+        showOutlineSelector.value = true
+      }
+    }
+  } catch (e) {
+    console.warn('加载大纲列表失败:', e)
+  }
+}
+
+// 选择大纲进入课堂
+const selectOutline = (outline) => {
+  currentOutline.value = outline
+  const mods = outline.modules_data || []
+  totalModules.value = mods.length || 3
+  showOutlineSelector.value = false
+  loadModuleList()
+}
+
 // ============ 模块侧边栏 ============
 const sidebarCollapsed = ref(false)
 const moduleList = ref([])
 const activeModuleIndex = ref(0)
 const activeModuleName = ref('')
 const teachingProgress = ref(null)
+
+// ============ 后台生成追踪 ============
+const generatingCount = computed(() => moduleList.value.filter(m => m.content_status === 'generating').length)
+
+// ============ Toast通知系统 ============
+const toasts = ref([])
+let toastIdCounter = 0
+const addToast = (message, type = 'info', duration = 4000) => {
+  const id = ++toastIdCounter
+  toasts.value.push({ id, message, type })
+  setTimeout(() => removeToast(id), duration)
+}
+const removeToast = (id) => {
+  const idx = toasts.value.findIndex(t => t.id === id)
+  if (idx >= 0) toasts.value.splice(idx, 1)
+}
+
+// 跳转到正在生成的模块
+const scrollToGeneratingModule = () => {
+  const genMod = moduleList.value.find(m => m.content_status === 'generating')
+  if (genMod) {
+    selectModule(genMod)
+  }
+}
 
 const loadModuleList = async () => {
   if (!currentOutline.value) return
@@ -491,11 +723,14 @@ const selectModule = (mod) => {
   activeModuleName.value = cleanModuleName(mod.name)
 }
 
-// 生成单个模块的课程内容
+// 生成单个模块的课程内容（后台运行，不阻塞用户操作）
 const generateModuleContent = async (mod) => {
   if (mod.content_status === 'generating' || mod.has_content) return
   mod.content_status = 'generating'
+  mod.gen_progress = 0
+  mod.gen_progress_text = '正在生成文字内容...'
   const token = localStorage.getItem('token') || ''
+  const moduleName = cleanModuleName(mod.name)
   try {
     const res = await fetch('/api/v1/ai/tutor/generate-module', {
       method: 'POST',
@@ -510,34 +745,77 @@ const generateModuleContent = async (mod) => {
     if (data.stream_url) {
       // 直连后端避免代理缓冲
       const evtSource = new EventSource(`http://127.0.0.1:8000${data.stream_url}?token=${encodeURIComponent(token)}`)
+      let textGenStarted = false
+      // 文字生成阶段：0~50%
       evtSource.addEventListener('token', (e) => {
-        try { /* token received, generation in progress */ } catch { /* ignore */ }
+        try {
+          if (!textGenStarted) {
+            textGenStarted = true
+            mod.gen_progress_text = '正在生成文字内容...'
+          }
+          // 文字生成阶段，逐步推进到50%
+          if (mod.gen_progress < 48) {
+            mod.gen_progress = Math.min(48, mod.gen_progress + 0.5)
+          }
+        } catch { /* ignore */ }
+      })
+      // 监听status事件，更新生成进度文字和百分比
+      evtSource.addEventListener('status', (e) => {
+        try {
+          const d = JSON.parse(e.data)
+          if (d.message) {
+            mod.gen_progress_text = d.message
+          }
+          // 根据阶段更新进度
+          if (d.phase === 'generating_boards') {
+            mod.gen_progress = 50
+            mod.gen_progress_text = '正在分析内容，生成知识板书...'
+          } else if (d.phase === 'generating_board_image') {
+            // 板书图片阶段：55~98%
+            const current = d.current || 1
+            const total = d.total || 4
+            mod.gen_progress = 55 + Math.round((current / total) * 43)
+            mod.gen_progress_text = `正在生成板书图片 (${current}/${total})...`
+          }
+        } catch { /* ignore */ }
       })
       evtSource.addEventListener('completed', (e) => {
         try {
           const d = JSON.parse(e.data)
           if (d.module_index === mod.module_index) {
+            mod.gen_progress = 100
             mod.content_status = 'completed'
             mod.has_content = true
+            mod.gen_progress_text = ''
+            // 通知用户该模块生成完毕（即使用户在看其他模块）
+            addToast(`「${moduleName}」课程生成完毕，可以开始学习啦！`, 'success')
           }
         } catch { /* ignore */ }
         evtSource.close()
       })
       evtSource.addEventListener('error', () => {
         mod.content_status = 'failed'
+        mod.gen_progress_text = ''
+        addToast(`「${moduleName}」生成失败，请重试`, 'error')
         evtSource.close()
       })
     } else {
       mod.content_status = 'failed'
+      mod.gen_progress_text = ''
+      addToast(`「${moduleName}」生成失败，请重试`, 'error')
     }
   } catch (e) {
     mod.content_status = 'failed'
+    mod.gen_progress_text = ''
+    addToast(`「${moduleName}」生成失败，请重试`, 'error')
   }
 }
 
 // 开始模块教学
 const startModule = async (mod) => {
   selectModule(mod)
+  // 学习次数+1
+  userStore.incrementLearningCount().catch(() => {})
   // 保存进度
   if (teachingProgress.value) {
     teachingProgress.value.current_module = mod.module_index
@@ -556,7 +834,22 @@ const startModule = async (mod) => {
   sseStreamDone = false
   stopSpeaking()
 
-  // 加载板书
+  // 重置板书
+  aiBoards.value = []
+  currentBoardIndex.value = -1
+  whiteboardPoints.value = []
+  extractedCode.value = ''
+  allExtractedPointKeys.clear()
+
+  // 清空学伴消息，触发学伴打招呼
+  companionMessages.value = []
+  stopCompanionComments()
+  if (currentOutline.value) {
+    companionGreet(currentOutline.value.id, mod.module_index)
+    startCompanionComments(currentOutline.value.id, mod.module_index)
+  }
+
+  // 加载板书（从keyPoints作为降级）
   if (mod.keyPoints?.length) {
     whiteboardPoints.value = mod.keyPoints.map((p, i) => ({ text: p, _key: `mod_${i}` }))
   }
@@ -575,11 +868,9 @@ const startModule = async (mod) => {
   }).then(res => res.json()).then(data => {
     if (data.stream_url) {
       aiEventSource?.close()
-      // ⚠️ 直连后端，避免 Vue 代理缓冲 SSE 流导致数据永不送达
       const sseUrl = `http://127.0.0.1:8000${data.stream_url}?token=${encodeURIComponent(token)}`
       aiEventSource = new EventSource(sseUrl)
 
-      // 超时保护：15秒无事件则判定失败
       let sseTimer = setTimeout(() => {
         if (isSpeaking.value && !lectureDisplay.value) {
           sseStreamDone = false
@@ -594,9 +885,54 @@ const startModule = async (mod) => {
         try { tokenBuffer.value += JSON.parse(e.data).token } catch { /* ignore */ }
       })
 
+      // 板书就绪事件
+      aiEventSource.addEventListener('boards_ready', (e) => {
+        try {
+          const boardData = JSON.parse(e.data)
+          if (boardData.boards && boardData.boards.length > 0) {
+            aiBoards.value = boardData.boards
+            // 不在这里设置 currentBoardIndex，等后端 board_switch 事件来切换
+            // 这样可以保证板书切换节奏由时间间隔控制
+            if (currentBoardIndex.value < 0) {
+              currentBoardIndex.value = 0  // 首次显示第一张
+              lastAutoBoardSwitchTime = Date.now()
+            }
+          }
+        } catch { /* ignore */ }
+      })
+
+      // 板书图片就绪事件（图片生成完成，实时更新）
+      aiEventSource.addEventListener('board_image_ready', (e) => {
+        try {
+          const d = JSON.parse(e.data)
+          if (d.index !== undefined && d.image_url) {
+            // 直接修改原数组对应项的image_url（Vue3 reactive proxy自动追踪）
+            if (aiBoards.value[d.index]) {
+              aiBoards.value[d.index].image_url = d.image_url
+              aiBoards.value[d.index]._img_failed = false
+            }
+          }
+        } catch { /* ignore */ }
+      })
+
+      // 板书切换事件（后端根据教学进度自动切换）
+      aiEventSource.addEventListener('board_switch', (e) => {
+        try {
+          const d = JSON.parse(e.data)
+          if (d.index !== undefined && d.index >= 0) {
+            // 如果用户刚手动翻页，3秒内不响应后端的自动切换
+            if (Date.now() < manualBoardSwitchUntil) return
+            // 每张板书最少展示30秒，防止切换过快
+            const now = Date.now()
+            if (currentBoardIndex.value >= 0 && now - lastAutoBoardSwitchTime < MIN_BOARD_DISPLAY_MS) return
+            currentBoardIndex.value = d.index
+            lastAutoBoardSwitchTime = now
+          }
+        } catch { /* ignore */ }
+      })
+
       aiEventSource.addEventListener('done', () => {
         clearTimeout(sseTimer)
-        // 不立即结束：标记 SSE 完成，让打字机慢慢消耗完 buffer
         sseStreamDone = true
         aiEventSource.close()
       })
@@ -662,6 +998,38 @@ const whiteboardPoints = ref([])
 const extractedCode = ref('')
 const allExtractedPointKeys = new Set()
 
+// ============ 智能体板书系统 ============
+const aiBoards = ref([])              // 板书智能体生成的板书序列
+const currentBoardIndex = ref(-1)     // 当前显示的板书索引
+let manualBoardSwitchUntil = 0        // 手动翻页保护期截止时间（防止后端board_switch覆盖用户操作）
+let lastAutoBoardSwitchTime = 0       // 上次自动切换板书的时间
+const MIN_BOARD_DISPLAY_MS = 30000    // 每张板书最少展示30秒
+const currentBoard = computed(() => {
+  return currentBoardIndex.value >= 0 && currentBoardIndex.value < aiBoards.value.length
+    ? aiBoards.value[currentBoardIndex.value]
+    : null
+})
+
+const boardTypeLabel = (type) => {
+  const labels = {
+    outline: '🗺️ 知识全景',
+    diagram: '🔗 示意图',
+    illustration: '🎨 场景插画',
+    formula: '📐 公式',
+    summary: '🏆 课堂总结'
+  }
+  return labels[type] || '📌 笔记'
+}
+
+// 板书图片加载失败时回退到文字
+const onBoardImageError = (e) => {
+  // 直接在aiBoards原始数组对应项上标记失败
+  const idx = currentBoardIndex.value
+  if (idx >= 0 && idx < aiBoards.value.length) {
+    aiBoards.value[idx]._img_failed = true
+  }
+}
+
 // 向后兼容（保留旧引用，部分函数仍会检查 teachingContent）
 const currentContentIndex = ref(0)
 const teachingContent = reactive([])
@@ -725,7 +1093,7 @@ const stopTyping = () => {
 
 const endTeachingSession = () => {
   stopTyping()
-  stopSpeaking()
+  // 不立即停止语音，让当前句子播完
   if (lectureDisplay.value.trim()) flushCurrentPage()
   isSpeaking.value = false
   sseStreamDone = false
@@ -733,6 +1101,10 @@ const endTeachingSession = () => {
   if (currentOutline.value && activeModuleIndex.value > 0) {
     updateProgress(activeModuleIndex.value, 80)
   }
+  // 语音在3秒后停止，给最后一句播完的时间
+  setTimeout(() => {
+    stopSpeaking()
+  }, 3000)
 }
 
 const restartTypingWithNewSpeed = () => {
@@ -762,7 +1134,9 @@ const flushCurrentPage = () => {
 
   // 清空当前显示，开始新页
   lectureDisplay.value = ''
-  lastSpokenEnd = 0  // 重置朗读位置，否则新页文字会被跳过
+  lastSpokenEnd = 0  // 重置朗读位置，新页从0开始
+  // 停止当前语音，新页内容由打字机驱动重新朗读
+  stopSpeaking()
 }
 
 const goToPrevPage = () => {
@@ -850,6 +1224,8 @@ const setSpeed = (speed) => {
 const voiceEnabled = ref(true)
 let lastSpokenEnd = 0  // 记录已朗读到的位置
 let ttsKeepAlive = null // Chrome 语音长句自动暂停的 keepalive 定时器
+let ttsWatchdog = null  // Chrome TTS卡死检测（speaking=true但无onend）
+let ttsLastProgress = Date.now() // TTS最近一次进展时间
 
 // 预加载 voices（Chrome 需要 onvoiceschanged 事件）
 if (typeof window !== 'undefined' && window.speechSynthesis) {
@@ -881,6 +1257,8 @@ const speakNewSentences = () => {
   if (window.speechSynthesis.speaking) return
 
   const fullText = lectureDisplay.value
+  if (!fullText) return
+  // 如果 lastSpokenEnd 超出当前文本长度（翻页后重置），归零
   if (lastSpokenEnd > fullText.length) lastSpokenEnd = 0
 
   // 找最近一个完整句子，逐句播放不跳过
@@ -891,7 +1269,11 @@ const speakNewSentences = () => {
   // 朗读前清洗格式字符
   const sentence = cleanTextForSpeech(rawSentence)
   lastSpokenEnd += rawSentence.length
-  if (!sentence) return  // 全是格式字符，跳过
+  if (!sentence) {
+    // 全是格式字符，跳过并尝试下一句
+    setTimeout(() => speakNewSentences(), 50)
+    return
+  }
   const utterance = new SpeechSynthesisUtterance(sentence)
   utterance.lang = 'zh-CN'
   // 语音速度与倍速同步（rate=1 为正常语速 ~5字/秒）
@@ -914,26 +1296,47 @@ const speakNewSentences = () => {
 
   // Chrome keepalive：防止长句（>15s）自动暂停
   utterance.onstart = () => {
+    ttsLastProgress = Date.now()
     if (ttsKeepAlive) clearInterval(ttsKeepAlive)
     ttsKeepAlive = setInterval(() => {
       if (window.speechSynthesis.paused) {
         window.speechSynthesis.resume()
+      }
+      ttsLastProgress = Date.now() // resume也算进展
+    }, 5000)
+    // 看门狗：检测TTS卡死（speaking=true但20秒无进展）
+    if (ttsWatchdog) clearInterval(ttsWatchdog)
+    ttsWatchdog = setInterval(() => {
+      if (window.speechSynthesis.speaking && Date.now() - ttsLastProgress > 20000) {
+        console.warn('[TTS] 检测到语音卡死，强制重启')
+        window.speechSynthesis.cancel()
+        clearInterval(ttsWatchdog)
+        ttsWatchdog = null
+        // 重新触发朗读
+        if (voiceEnabled.value) {
+          setTimeout(() => speakNewSentences(), 300)
+        }
       }
     }, 5000)
   }
 
   // 链式播放：当前句子播完 → 立即播放下一句
   utterance.onend = () => {
+    ttsLastProgress = Date.now()
     if (ttsKeepAlive) { clearInterval(ttsKeepAlive); ttsKeepAlive = null }
+    if (ttsWatchdog) { clearInterval(ttsWatchdog); ttsWatchdog = null }
     if (voiceEnabled.value) {
       setTimeout(() => speakNewSentences(), 100)
     }
   }
 
   utterance.onerror = (e) => {
+    ttsLastProgress = Date.now()
     if (ttsKeepAlive) { clearInterval(ttsKeepAlive); ttsKeepAlive = null }
+    if (ttsWatchdog) { clearInterval(ttsWatchdog); ttsWatchdog = null }
     // "canceled" 是正常停止，不需要重试
-    if (e.error !== 'canceled' && voiceEnabled.value) {
+    // "interrupted" 也是正常中断
+    if (e.error !== 'canceled' && e.error !== 'interrupted' && voiceEnabled.value) {
       setTimeout(() => speakNewSentences(), 200)
     }
   }
@@ -946,6 +1349,7 @@ const stopSpeaking = () => {
   if (window.speechSynthesis) {
     window.speechSynthesis.cancel()
     if (ttsKeepAlive) { clearInterval(ttsKeepAlive); ttsKeepAlive = null }
+    if (ttsWatchdog) { clearInterval(ttsWatchdog); ttsWatchdog = null }
   }
 }
 
@@ -976,125 +1380,206 @@ const showResult = ref(false)
 const isCorrect = ref(false)
 const questionXP = ref(10)
 
-// 学伴
-const classmates = ref([])
+// ============ AI学伴 ============
+const COMPANION_MAP = {
+  scholar: { type: 'scholar', name: '小明', avatar: '🎓', typeLabel: '学霸型' },
+  social: { type: 'social', name: '小乐', avatar: '😎', typeLabel: '显眼包' },
+  introvert: { type: 'introvert', name: '小静', avatar: '🤫', typeLabel: '内向型' },
+}
 
-// 学伴消息
-const companionMessages = ref([
-  { sender: 'system', senderName: '系统', avatar: '📢', text: '欢迎来到Python基础语法课堂！', time: '09:00', type: 'system' },
-  { sender: 'mate1', senderName: '小乐', avatar: '😎', text: '大家好！今天一起学习Python～', time: '09:01', type: 'chat' },
-  { sender: 'mate2', senderName: '小困', avatar: '😵', text: '变量名到底能不能用数字开头啊...', time: '09:02', type: 'chat' }
-])
-
-const messageContainer = ref(null)
-
-// 用户表情
-const moodEmoji = computed(() => {
-  if (showQuestion.value) {
-    return isCorrect.value ? '😄' : '🤔'
-  }
-  return '😊'
+const activeCompanions = computed(() => {
+  const list = userStore.settings.studyCompanions || []
+  return list.map(t => COMPANION_MAP[t]).filter(Boolean)
 })
 
-// 学伴互动方法
-const toggleCompanionAction = (mate) => {
-  alert(`🤝 ${mate.nickname} 的状态：${mate.status === 'online' ? '在线' : '离线'}\n点击可以与学伴互动！`)
+// 学伴消息
+const companionMessages = ref([])
+const messageContainer = ref(null)
+const companionTyping = ref(null)  // { name, avatar } 正在打字中
+
+const getTimeStr = () => {
+  const now = new Date()
+  return `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`
 }
 
-const companionAskQuestion = () => {
-  const question = prompt('请输入你想向学伴提问的问题：')
-  if (question && question.trim()) {
-    const now = new Date()
-    const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`
-    
-    // 添加用户消息
-    companionMessages.value.push({
-      sender: 'user',
-      senderName: '我',
-      avatar: userStore.userInfo.avatar,
-      text: question,
-      time: timeStr,
-      type: 'chat'
+const addCompanionMessage = (sender, senderName, avatar, text, type = 'chat') => {
+  companionMessages.value.push({
+    sender, senderName, avatar, text, time: getTimeStr(), type
+  })
+  // 自动滚动到底部
+  nextTick(() => {
+    if (messageContainer.value) {
+      messageContainer.value.scrollTop = messageContainer.value.scrollHeight
+    }
+  })
+}
+
+// 学伴打招呼（课堂开始时调用）
+const companionGreet = async (outlineId, moduleIndex) => {
+  const comps = userStore.settings.studyCompanions || []
+  if (comps.length === 0) return
+  try {
+    const token = localStorage.getItem('token') || ''
+    const res = await fetch('/api/v1/ai/companion/greet', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ outline_id: outlineId, module_index: moduleIndex, companions: comps })
     })
-    
-    // 模拟学伴回复
-    setTimeout(() => {
-      const responses = [
-        '这个问题问得好！让我想想...',
-        '我觉得应该是这样的...',
-        '我之前也遇到过类似的问题！',
-        '可以试试看用 print() 函数输出一下～'
-      ]
-      const randomResponse = responses[Math.floor(Math.random() * responses.length)]
-      const responseTime = new Date()
-      const responseTimeStr = `${responseTime.getHours().toString().padStart(2, '0')}:${responseTime.getMinutes().toString().padStart(2, '0')}`
-      
-      companionMessages.value.push({
-        sender: 'mate1',
-        senderName: '小乐',
-        avatar: '😎',
-        text: randomResponse,
-        time: responseTimeStr,
-        type: 'chat'
-      })
-      
-      // 自动滚动到底部
-      if (messageContainer.value) {
-        setTimeout(() => {
-          messageContainer.value.scrollTop = messageContainer.value.scrollHeight
-        }, 100)
+    if (res.ok) {
+      const data = await res.json()
+      for (const g of data.greetings || []) {
+        addCompanionMessage(g.type, g.name, g.avatar, g.text, 'greet')
       }
-    }, 1500)
+    }
+  } catch (e) { console.warn('学伴打招呼失败:', e) }
+}
+
+// 学伴评论（讲课时偶尔调用）
+let companionCommentTimer = null
+const startCompanionComments = (outlineId, moduleIndex) => {
+  stopCompanionComments()
+  const comps = userStore.settings.studyCompanions || []
+  if (comps.length === 0) return
+  
+  // 每30-60秒随机触发一次学伴评论
+  const scheduleNext = () => {
+    const delay = 30000 + Math.random() * 30000  // 30~60秒
+    companionCommentTimer = setTimeout(async () => {
+      if (!isSpeaking.value || isPaused.value) {
+        scheduleNext()
+        return
+      }
+      // 取最近的讲授内容作为上下文
+      const recentText = (lectureDisplay.value || tokenBuffer.value || '').slice(-500)
+      if (!recentText) { scheduleNext(); return }
+      
+      try {
+        const token = localStorage.getItem('token') || ''
+        const res = await fetch('/api/v1/ai/companion/comment', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            outline_id: outlineId,
+            module_index: moduleIndex,
+            lecture_text: recentText,
+            companions: comps
+          })
+        })
+        if (res.ok) {
+          const data = await res.json()
+          for (const c of data.comments || []) {
+            // 打字中效果
+            companionTyping.value = { name: c.name, avatar: c.avatar }
+            await new Promise(r => setTimeout(r, 800 + Math.random() * 700))
+            companionTyping.value = null
+            addCompanionMessage(c.type, c.name, c.avatar, c.text, 'comment')
+          }
+        }
+      } catch (e) { console.warn('学伴评论失败:', e) }
+      scheduleNext()
+    }, delay)
+  }
+  scheduleNext()
+}
+
+const stopCompanionComments = () => {
+  if (companionCommentTimer) {
+    clearTimeout(companionCommentTimer)
+    companionCommentTimer = null
   }
 }
 
-const companionDiscuss = () => {
+// ============ 发起讨论 ============
+const isDiscussing = ref(false)
+const discussionTopic = ref('')
+const discussionInput = ref('')
+const discussionSending = ref(false)
+const discussionTimeLeft = ref(180)
+const discussionHistory = ref([])
+let discussionTimer = null
+
+const startDiscussion = () => {
   const topic = prompt('请输入你想讨论的话题：')
-  if (topic && topic.trim()) {
-    const now = new Date()
-    const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`
-    
-    companionMessages.value.push({
-      sender: 'system',
-      senderName: '讨论',
-      avatar: '💡',
-      text: `发起了关于"${topic}"的讨论`,
-      time: timeStr,
-      type: 'system'
-    })
-    
-    // 学伴参与讨论
-    setTimeout(() => {
-      const discussResponses = [
-        '我觉得这个话题很有意思！',
-        '同意！我也这么认为',
-        '有没有其他的理解方式呢？'
-      ]
-      const randomResponse = discussResponses[Math.floor(Math.random() * discussResponses.length)]
-      const responseTime = new Date()
-      const responseTimeStr = `${responseTime.getHours().toString().padStart(2, '0')}:${responseTime.getMinutes().toString().padStart(2, '0')}`
-      
-      companionMessages.value.push({
-        sender: 'mate2',
-        senderName: '小困',
-        avatar: '😵',
-        text: randomResponse,
-        time: responseTimeStr,
-        type: 'chat'
+  if (!topic || !topic.trim()) return
+  
+  isDiscussing.value = true
+  discussionTopic.value = topic.trim()
+  discussionInput.value = ''
+  discussionTimeLeft.value = 180
+  discussionHistory.value = []
+  
+  addCompanionMessage('system', '讨论', '💡', `发起了关于「${topic.trim()}」的讨论`, 'system')
+  
+  // 3分钟倒计时
+  discussionTimer = setInterval(() => {
+    discussionTimeLeft.value--
+    if (discussionTimeLeft.value <= 0) {
+      endDiscussion()
+    }
+  }, 1000)
+  
+  // 触发学伴首次发言
+  _triggerCompanionDiscussion(topic.trim(), '')
+}
+
+const sendDiscussionMessage = async () => {
+  const msg = discussionInput.value.trim()
+  if (!msg || discussionSending.value) return
+  
+  discussionInput.value = ''
+  discussionSending.value = true
+  
+  addCompanionMessage('user', '我', userStore.userInfo.avatar, msg, 'chat')
+  discussionHistory.value.push({ name: '我', text: msg })
+  
+  await _triggerCompanionDiscussion(discussionTopic.value, msg)
+  discussionSending.value = false
+}
+
+const _triggerCompanionDiscussion = async (topic, userMsg) => {
+  const comps = userStore.settings.studyCompanions || []
+  if (comps.length === 0) return
+  
+  try {
+    const token = localStorage.getItem('token') || ''
+    const res = await fetch('/api/v1/ai/companion/discuss', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        outline_id: currentOutline.value?.id,
+        module_index: activeModuleIndex.value,
+        topic,
+        user_message: userMsg,
+        discussion_history: discussionHistory.value,
+        companions: comps
       })
-      
-      if (messageContainer.value) {
-        setTimeout(() => {
-          messageContainer.value.scrollTop = messageContainer.value.scrollHeight
-        }, 100)
+    })
+    if (res.ok) {
+      const data = await res.json()
+      for (const r of data.responses || []) {
+        companionTyping.value = { name: r.name, avatar: r.avatar }
+        await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 800))
+        companionTyping.value = null
+        addCompanionMessage(r.type, r.name, r.avatar, r.text, 'chat')
+        discussionHistory.value.push({ name: r.name, text: r.text })
       }
-    }, 2000)
+    }
+  } catch (e) {
+    console.warn('学伴讨论失败:', e)
   }
 }
 
-// 彩蛋
-const showEgg = ref(false)
-const currentEgg = ref({ title: '💡', content: '', xp: 0 })
+const endDiscussion = () => {
+  isDiscussing.value = false
+  discussionTopic.value = ''
+  discussionInput.value = ''
+  discussionHistory.value = []
+  if (discussionTimer) {
+    clearInterval(discussionTimer)
+    discussionTimer = null
+  }
+  addCompanionMessage('system', '系统', '📢', '讨论已结束', 'system')
+}
 
 // 抢答
 const showRush = ref(false)
@@ -1149,6 +1634,7 @@ const rushAnswer = () => {
 
 // 定时器
 let timer = null
+let xpTimer = null // 每分钟自动+10XP
 
 const formatTime = (seconds) => {
   const m = Math.floor(seconds / 60)
@@ -1204,21 +1690,169 @@ const nextQuestion = () => {
   }
 }
 
-// 触发提问
+// ============ 课堂提问系统 ============
+const showAskDialog = ref(false)
+const askMessages = ref([])
+const askInput = ref('')
+const askStreaming = ref(false)
+let askEventSource = null
+const askMessageContainer = ref(null)
+// 保存暂停前的SSE状态，用于恢复
+let wasSpeakingBeforeAsk = false
+let wasTypingActiveBeforeAsk = false
+
+// 触发提问 → 暂停课堂，弹出对话框
 const askQuestion = () => {
-  alert('💬 请在下方输入您的问题，AI助教将尽快为您解答！')
+  if (!currentOutline.value || !isSpeaking.value) {
+    // 如果没在上课，也允许提问但提示
+    if (!currentOutline.value) {
+      alert('请先选择课程大纲进入课堂')
+      return
+    }
+  }
+
+  // 暂停当前讲课
+  wasSpeakingBeforeAsk = isSpeaking.value
+  wasTypingActiveBeforeAsk = !!typingTimer
+
+  // 暂停打字机和语音
+  stopTyping()
+  stopSpeaking()
+  isPaused.value = true
+
+  // 构建AI教师的开场白
+  const styleGreeting = teacherStyle.value === 'humorous'
+    ? '嘿，同学！你对讲的哪部分有疑惑呢？尽管问，我给你讲明白~'
+    : teacherStyle.value === 'rigorous'
+    ? '同学你好，请具体说明你对哪部分内容存在疑问，我来为你详细解析。'
+    : '同学你好，你对讲的哪部分有疑惑呢？不用着急，我来帮你解答~'
+
+  askMessages.value = [
+    { role: 'assistant', content: styleGreeting, streaming: false }
+  ]
+  askInput.value = ''
+  askStreaming.value = false
+  showAskDialog.value = true
+
+  // 滚动到底部
+  nextTick(() => {
+    if (askMessageContainer.value) {
+      askMessageContainer.value.scrollTop = askMessageContainer.value.scrollHeight
+    }
+  })
 }
 
-// 触发彩蛋
-const triggerEggDrop = () => {
-  const egg = { name: 'XP礼包', xp: 20, emoji: '🎁' }
-  currentEgg.value = egg
-  showEgg.value = true
-  currentXP.value += egg.xp
-  userStore.addXP(egg.xp)
-  setTimeout(() => {
-    showEgg.value = false
-  }, 3000)
+// 发送提问消息
+const sendAskMessage = async () => {
+  const question = askInput.value.trim()
+  if (!question || askStreaming.value) return
+
+  // 添加用户消息
+  askMessages.value.push({ role: 'user', content: question, streaming: false })
+  askInput.value = ''
+  askStreaming.value = true
+
+  // 添加AI回复占位
+  const assistantMsg = { role: 'assistant', content: '', streaming: true }
+  askMessages.value.push(assistantMsg)
+
+  nextTick(() => {
+    if (askMessageContainer.value) {
+      askMessageContainer.value.scrollTop = askMessageContainer.value.scrollHeight
+    }
+  })
+
+  const token = localStorage.getItem('token') || ''
+  const lectureContext = fullLecture.value || lectureDisplay.value
+
+  try {
+    const res = await fetch('/api/v1/ai/tutor/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        outline_id: currentOutline.value.id,
+        module_index: activeModuleIndex.value || 1,
+        lecture_context: lectureContext.substring(0, 1500),
+        question: question,
+        teacher_style: teacherStyle.value
+      })
+    })
+
+    if (!res.ok) {
+      let errMsg = '请求失败'
+      try { const errData = await res.json(); errMsg = errData.detail || errData.message || JSON.stringify(errData) } catch { /* ignore */ }
+      console.error('[askQuestion] API错误:', res.status, errMsg)
+      assistantMsg.content = `抱歉，提问失败：${errMsg}`
+      assistantMsg.streaming = false
+      askStreaming.value = false
+      return
+    }
+
+    const data = await res.json()
+    console.log('[askQuestion] API返回:', data)
+
+    if (data.stream_url) {
+      // 关闭之前的提问SSE
+      if (askEventSource) askEventSource.close()
+
+      const sseUrl = `http://127.0.0.1:8000${data.stream_url}?token=${encodeURIComponent(token)}`
+      askEventSource = new EventSource(sseUrl)
+
+      askEventSource.addEventListener('token', (e) => {
+        try {
+          const d = JSON.parse(e.data)
+          assistantMsg.content += d.token || ''
+          nextTick(() => {
+            if (askMessageContainer.value) {
+              askMessageContainer.value.scrollTop = askMessageContainer.value.scrollHeight
+            }
+          })
+        } catch { /* ignore */ }
+      })
+
+      askEventSource.addEventListener('done', () => {
+        assistantMsg.streaming = false
+        askStreaming.value = false
+        askEventSource?.close()
+        askEventSource = null
+      })
+
+      askEventSource.addEventListener('error', () => {
+        assistantMsg.streaming = false
+        askStreaming.value = false
+        askEventSource?.close()
+        askEventSource = null
+      })
+    } else {
+      assistantMsg.content = '抱歉，暂时无法回答你的问题。'
+      assistantMsg.streaming = false
+      askStreaming.value = false
+    }
+  } catch (e) {
+    assistantMsg.content = '网络错误，请稍后重试。'
+    assistantMsg.streaming = false
+    askStreaming.value = false
+  }
+}
+
+// 关闭提问对话框，恢复课堂
+const closeAskDialog = () => {
+  // 关闭提问SSE
+  if (askEventSource) {
+    askEventSource.close()
+    askEventSource = null
+  }
+  askStreaming.value = false
+  showAskDialog.value = false
+
+  // 恢复课堂状态
+  isPaused.value = false
+  if (wasSpeakingBeforeAsk && isSpeaking.value) {
+    // 恢复打字机
+    if (wasTypingActiveBeforeAsk && !typingTimer) {
+      startTyping()
+    }
+  }
 }
 
 // 显示提示
@@ -1360,54 +1994,7 @@ const askAIQuestion = async () => {
   } catch (e) { console.warn('AI出题失败:', e) }
 }
 
-// 学伴答题
-const startCompanionAnswering = () => {
-  classmates.value.forEach(mate => {
-    mate.isAnswering = true
-    mate.lastAction = '✍️ 正在答题...'
-  })
-  
-  // 模拟学伴答题过程
-  setTimeout(() => {
-    const now = new Date()
-    const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`
-    
-    companionMessages.value.push({
-      sender: 'mate1',
-      senderName: '小乐',
-      avatar: '😎',
-      text: '我选C！变量名可以有下划线～',
-      time: timeStr,
-      type: 'chat'
-    })
-    
-    setTimeout(() => {
-      const now2 = new Date()
-      const timeStr2 = `${now2.getHours().toString().padStart(2, '0')}:${now2.getMinutes().toString().padStart(2, '0')}`
-      
-      companionMessages.value.push({
-        sender: 'mate2',
-        senderName: '小困',
-        avatar: '😵',
-        text: '我...我选A...不对吗？',
-        time: timeStr2,
-        type: 'chat'
-      })
-      
-      // 更新学伴状态
-      classmates.value[0].isAnswering = false
-      classmates.value[0].lastAction = '✅ 答对了'
-      classmates.value[1].isAnswering = false
-      classmates.value[1].lastAction = '❌ 答错了'
-      
-      if (messageContainer.value) {
-        setTimeout(() => {
-          messageContainer.value.scrollTop = messageContainer.value.scrollHeight
-        }, 100)
-      }
-    }, 2000)
-  }, 3000)
-}
+// 学伴答题（已移除，答题功能整合到AI学伴讨论中）
 
 // 计时器
 const startTimer = () => {
@@ -1416,6 +2003,14 @@ const startTimer = () => {
       remainingTime.value--
     }
   }, 1000)
+
+  // 每分钟自动+10XP
+  xpTimer = setInterval(() => {
+    if (!isPaused.value) {
+      currentXP.value += 10
+      userStore.addXP(10)
+    }
+  }, 60000)
 }
 
 onMounted(() => {
@@ -1425,10 +2020,14 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (timer) clearInterval(timer)
+  if (xpTimer) clearInterval(xpTimer)
   if (rushTimer) clearTimeout(rushTimer)
   if (rushCountdownTimer) clearInterval(rushCountdownTimer)
   if (typingTimer) clearInterval(typingTimer)
   if (aiEventSource) aiEventSource.close()
+  stopCompanionComments()
+  if (discussionTimer) clearInterval(discussionTimer)
+  if (askEventSource) askEventSource.close()
   stopSpeaking()
 })
 </script>
@@ -1515,6 +2114,35 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 1rem;
+}
+
+/* 后台生成进度指示器 */
+.gen-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  background: rgba(234, 179, 8, 0.15);
+  border: 1px solid rgba(234, 179, 8, 0.3);
+  border-radius: 20px;
+  padding: 0.25rem 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  animation: gen-pulse 2s ease-in-out infinite;
+}
+.gen-indicator:hover {
+  background: rgba(234, 179, 8, 0.25);
+}
+.gen-indicator-icon {
+  font-size: 0.875rem;
+}
+.gen-indicator-text {
+  font-size: 0.75rem;
+  color: #eab308;
+  white-space: nowrap;
+}
+@keyframes gen-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
 }
 
 .stat {
@@ -1630,6 +2258,7 @@ onUnmounted(() => {
   cursor: pointer;
   transition: all 0.15s;
   border: 1px solid transparent;
+  position: relative;
 }
 
 .module-item:hover {
@@ -1639,6 +2268,12 @@ onUnmounted(() => {
 .module-item.active {
   background: rgba(102, 126, 234, 0.15);
   border-color: rgba(102, 126, 234, 0.3);
+}
+
+.module-item.generating {
+  background: rgba(234, 179, 8, 0.05);
+  border-color: rgba(234, 179, 8, 0.15);
+  padding-bottom: 13px;
 }
 
 .module-item.completed {
@@ -1707,6 +2342,38 @@ onUnmounted(() => {
 .status-badge.generating {
   background: rgba(234, 179, 8, 0.2);
   color: #eab308;
+  font-size: 9px;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 生成百分比 */
+.gen-percent {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #eab308;
+  min-width: 32px;
+  text-align: right;
+}
+
+/* 生成进度条 */
+.gen-progress-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: rgba(234, 179, 8, 0.15);
+  border-radius: 0 0 8px 8px;
+  overflow: hidden;
+}
+.gen-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #eab308, #22c55e);
+  border-radius: 0 0 8px 8px;
+  transition: width 0.5s ease;
 }
 
 .status-badge.teaching {
@@ -1872,6 +2539,97 @@ onUnmounted(() => {
   font-style: italic;
   text-align: center;
   padding: 1rem;
+}
+
+/* 大纲选择器 */
+.outline-selector {
+  padding: 1.5rem;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.outline-selector .waiting-text {
+  font-style: normal;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+.goto-plan-btn {
+  padding: 0.5rem 1.2rem;
+  background: linear-gradient(135deg, #4A90D9, #6C5CE7);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+.goto-plan-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(74, 144, 217, 0.3);
+}
+
+.selector-title {
+  color: #2C3E50;
+  font-size: 1rem;
+  margin-bottom: 1rem;
+  text-align: center;
+}
+
+.outline-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.outline-card {
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(74, 144, 217, 0.15);
+  border-radius: 10px;
+  padding: 0.875rem 1rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.outline-card:hover {
+  border-color: #4A90D9;
+  background: rgba(255, 255, 255, 0.95);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(74, 144, 217, 0.15);
+}
+
+.outline-card-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: #2C3E50;
+  margin-bottom: 0.4rem;
+}
+
+.outline-card-meta {
+  display: flex;
+  gap: 0.75rem;
+  font-size: 0.78rem;
+  color: #8AA4C0;
+  margin-bottom: 0.5rem;
+}
+
+.outline-card-modules {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+.module-tag {
+  background: rgba(74, 144, 217, 0.1);
+  color: #4A90D9;
+  font-size: 0.72rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+}
+.module-tag.more {
+  background: rgba(108, 92, 231, 0.1);
+  color: #6C5CE7;
 }
 
 /* 倍速控制 */
@@ -2134,6 +2892,35 @@ onUnmounted(() => {
   font-size: 0.875rem;
 }
 
+.whiteboard-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.board-page-info {
+  font-size: 0.75rem;
+  color: #4A90D9;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  background: rgba(74, 144, 217, 0.08);
+  border-radius: 9999px;
+}
+
+.board-nav-btn {
+  padding: 0.15rem 0.5rem !important;
+  background: rgba(74, 144, 217, 0.1) !important;
+  border: none !important;
+  border-radius: 4px !important;
+  cursor: pointer;
+  font-size: 0.7rem;
+  color: #4A90D9;
+  transition: background 0.2s;
+}
+.board-nav-btn:hover {
+  background: rgba(74, 144, 217, 0.2) !important;
+}
+
 .whiteboard-header button {
   padding: 0.25rem 0.75rem;
   background: transparent;
@@ -2168,6 +2955,137 @@ onUnmounted(() => {
   line-height: 1.6;
   overflow-x: auto;
   color: #2C4A6E;
+}
+
+/* AI Board Styles */
+.ai-board {
+  animation: boardFadeIn 0.4s ease;
+}
+
+@keyframes boardFadeIn {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+.board-title-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px dashed rgba(74, 144, 217, 0.2);
+}
+
+.board-type-badge {
+  font-size: 0.7rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 9999px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.board-type-outline .board-type-badge { background: rgba(59, 130, 246, 0.12); color: #3B82F6; }
+.board-type-diagram .board-type-badge { background: rgba(16, 185, 129, 0.12); color: #10B981; }
+.board-type-code .board-type-badge { background: rgba(139, 92, 246, 0.12); color: #8B5CF6; }
+.board-type-formula .board-type-badge { background: rgba(245, 158, 11, 0.12); color: #F59E0B; }
+.board-type-comparison .board-type-badge { background: rgba(236, 72, 153, 0.12); color: #EC4899; }
+.board-type-summary .board-type-badge { background: rgba(34, 197, 94, 0.12); color: #22C55E; }
+
+.board-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #2C4A6E;
+}
+
+.board-body {
+  background: rgba(255, 255, 255, 0.6);
+  border-radius: 8px;
+  border: 1px solid rgba(74, 144, 217, 0.08);
+  overflow: auto;
+}
+
+.board-image-wrapper {
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+}
+
+.board-image {
+  width: 100%;
+  display: block;
+  object-fit: contain;
+  max-height: 500px;
+}
+
+.board-pre {
+  font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-size: 0.8rem;
+  line-height: 1.7;
+  padding: 0.875rem;
+  margin: 0;
+  color: #2C4A6E;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.board-content-card {
+  padding: 1rem;
+}
+
+.board-content-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #1a365d;
+  margin: 0 0 0.75rem 0;
+  padding-bottom: 0.5rem;
+  border-bottom: 2px solid rgba(74, 144, 217, 0.15);
+}
+
+.board-content-text {
+  font-size: 0.85rem;
+  line-height: 1.8;
+  color: #4A5568;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.board-type-diagram .board-content-text {
+  color: #1a5c3a;
+}
+
+.board-type-formula .board-content-text {
+  text-align: center;
+  color: #92400e;
+}
+
+.board-type-summary .board-content-text {
+  color: #166534;
+  font-weight: 500;
+}
+
+.board-progress {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 0.75rem;
+}
+
+.board-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(74, 144, 217, 0.2);
+  transition: all 0.3s;
+}
+
+.board-dot.active {
+  background: #4A90D9;
+  transform: scale(1.4);
+}
+
+.board-dot.done {
+  background: rgba(74, 144, 217, 0.5);
 }
 
 .knowledge-points {
@@ -2260,7 +3178,7 @@ onUnmounted(() => {
   margin-bottom: 0.75rem;
 }
 
-/* Classmates - 增强版 */
+/* Classmates - 学伴区 */
 .classmates.enhanced {
   background: rgba(255, 255, 255, 0.85);
   border-radius: var(--radius);
@@ -2271,6 +3189,47 @@ onUnmounted(() => {
   gap: 0.75rem;
   max-height: 500px;
   overflow: hidden;
+}
+
+.classmates.empty {
+  background: rgba(255, 255, 255, 0.5);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  border: 1px dashed rgba(74, 144, 217, 0.2);
+  text-align: center;
+}
+
+.empty-companions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.empty-icon {
+  font-size: 2rem;
+  opacity: 0.5;
+}
+
+.empty-companions p {
+  font-size: 0.8125rem;
+  color: #8AA4C0;
+  margin: 0;
+}
+
+.add-companion-btn {
+  padding: 0.375rem 1rem;
+  border-radius: 20px;
+  background: rgba(74, 144, 217, 0.1);
+  border: 1px solid rgba(74, 144, 217, 0.3);
+  color: #4A90D9;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.add-companion-btn:hover {
+  background: rgba(74, 144, 217, 0.2);
 }
 
 .classmates-header {
@@ -2346,10 +3305,6 @@ onUnmounted(() => {
   margin-bottom: 0.25rem;
 }
 
-.message-bubble.mate2 .msg-sender {
-  color: var(--warning);
-}
-
 .message-bubble.user .msg-sender {
   color: #4A90D9;
 }
@@ -2377,25 +3332,20 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  padding: 0.75rem;
+  padding: 0.5rem 0.75rem;
   background: rgba(255, 255, 255, 0.6);
   border-radius: var(--radius);
-  cursor: pointer;
-  transition: all 0.3s ease;
+  transition: all 0.2s;
 }
 
-.classmate-card:hover {
-  background: rgba(255, 255, 255, 0.85);
-  transform: translateX(4px);
+.classmate-card.scholar {
+  border-left: 3px solid #22c55e;
 }
-
-.classmate-card.online {
-  border-left: 3px solid #4A90D9;
+.classmate-card.social {
+  border-left: 3px solid #f59e0b;
 }
-
-.classmate-card.offline {
-  border-left: 3px solid #8AA4C0;
-  opacity: 0.6;
+.classmate-card.introvert {
+  border-left: 3px solid #8b5cf6;
 }
 
 .classmate-avatar-wrapper {
@@ -2444,23 +3394,52 @@ onUnmounted(() => {
   font-size: 0.75rem;
 }
 
-.answering-indicator {
-  color: var(--warning);
-  animation: blink 1s infinite;
+/* 打字中动画 */
+.msg-typing {
+  display: flex;
+  gap: 4px;
+  padding: 4px 0;
+}
+.msg-typing span {
+  width: 6px;
+  height: 6px;
+  background: #8AA4C0;
+  border-radius: 50%;
+  animation: typing-dot 1.4s infinite;
+}
+.msg-typing span:nth-child(2) { animation-delay: 0.2s; }
+.msg-typing span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes typing-dot {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-6px); opacity: 1; }
 }
 
-.last-action {
-  color: #8AA4C0;
+/* 消息类型样式 */
+.message-bubble.companion .msg-sender {
+  color: #4A90D9;
+}
+.message-bubble.companion.scholar .msg-sender { color: #22c55e; }
+.message-bubble.companion.social .msg-sender { color: #f59e0b; }
+.message-bubble.companion.introvert .msg-sender { color: #8b5cf6; }
+
+.message-bubble.greet {
+  background: rgba(74, 144, 217, 0.05);
+  border-radius: 8px;
+  padding: 2px 0;
+}
+
+.message-bubble.comment .msg-content {
+  background: rgba(255, 249, 230, 0.6);
 }
 
 /* 学伴互动按钮 */
 .companion-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
   gap: 0.5rem;
 }
 
 .action-btn {
+  flex: 1;
   padding: 0.5rem;
   background: rgba(255, 255, 255, 0.6);
   border: 1px solid rgba(74, 144, 217, 0.12);
@@ -2474,6 +3453,108 @@ onUnmounted(() => {
 .action-btn:hover {
   border-color: #4A90D9;
   background: rgba(74, 144, 217, 0.1);
+}
+
+.action-btn.primary {
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  color: white;
+  border: none;
+  font-weight: 600;
+}
+
+.action-btn.primary:hover {
+  opacity: 0.9;
+}
+
+.action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* 讨论面板 */
+.discussion-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  background: rgba(102, 126, 234, 0.08);
+  border-radius: var(--radius);
+  border: 1px solid rgba(102, 126, 234, 0.2);
+}
+
+.discussion-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.discussion-badge {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #667eea;
+}
+
+.discussion-timer {
+  font-size: 0.75rem;
+  color: #f59e0b;
+  font-weight: 600;
+}
+
+.discussion-end-btn {
+  margin-left: auto;
+  padding: 0.25rem 0.75rem;
+  border-radius: 12px;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.08);
+  color: #ef4444;
+  font-size: 0.6875rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.discussion-end-btn:hover {
+  background: rgba(239, 68, 68, 0.15);
+}
+
+.discussion-input-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.discussion-input {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  border-radius: 20px;
+  border: 1px solid rgba(74, 144, 217, 0.2);
+  background: rgba(255, 255, 255, 0.8);
+  font-size: 0.8125rem;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.discussion-input:focus {
+  border-color: #667eea;
+}
+
+.discussion-send-btn {
+  padding: 0.5rem 1rem;
+  border-radius: 20px;
+  border: none;
+  background: linear-gradient(135deg, #667eea, #764ba2);
+  color: white;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.discussion-send-btn:hover {
+  opacity: 0.9;
+}
+
+.discussion-send-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* Quick Tools */
@@ -2499,46 +3580,224 @@ onUnmounted(() => {
   background: rgba(74, 144, 217, 0.1);
 }
 
-/* Modals */
-.egg-modal {
+/* ============ 课堂提问对话框 ============ */
+.ask-modal {
   position: fixed;
   inset: 0;
-  background: rgba(44, 74, 110, 0.3); backdrop-filter: blur(4px);
+  background: rgba(44, 74, 110, 0.45);
+  backdrop-filter: blur(6px);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 200;
+  z-index: 300;
 }
 
-.egg-content {
-  background: linear-gradient(135deg, #A8D0F0, #4A90D9);
-  padding: 2rem;
-  border-radius: var(--radius-lg);
-  text-align: center;
-  max-width: 400px;
-  animation: eggBounce 0.5s ease;
+.ask-dialog {
+  width: 90%;
+  max-width: 520px;
+  max-height: 80vh;
+  background: rgba(255, 255, 255, 0.96);
+  border-radius: 20px;
+  border: 2px solid rgba(74, 144, 217, 0.25);
+  box-shadow: 0 12px 48px rgba(44, 74, 110, 0.25);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: askDialogIn 0.35s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-@keyframes eggBounce {
-  0% { transform: scale(0); }
-  50% { transform: scale(1.1); }
-  100% { transform: scale(1); }
+@keyframes askDialogIn {
+  0% { opacity: 0; transform: scale(0.9) translateY(20px); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
 }
 
-.egg-icon {
-  font-size: 3rem;
-  margin-bottom: 1rem;
+.ask-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  background: linear-gradient(135deg, #4A90D9, #7CB8E4);
+  color: white;
 }
 
-.egg-text {
-  color: #2C4A6E;
-  line-height: 1.6;
-  margin-bottom: 1rem;
+.ask-dialog-teacher {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
 }
 
-.egg-xp {
+.ask-teacher-avatar {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 50%;
   font-size: 1.5rem;
+}
+
+.ask-teacher-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.ask-teacher-name {
   font-weight: 700;
+  font-size: 0.95rem;
+}
+
+.ask-teacher-style {
+  font-size: 0.7rem;
+  opacity: 0.85;
+}
+
+.ask-dialog-badge {
+  padding: 0.25rem 0.75rem;
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.ask-dialog-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-height: 200px;
+  max-height: 45vh;
+}
+
+.ask-msg {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+
+.ask-msg.user {
+  flex-direction: row-reverse;
+}
+
+.ask-msg-avatar {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+
+.ask-msg.assistant .ask-msg-avatar {
+  background: linear-gradient(135deg, #4A90D9, #7CB8E4);
+}
+
+.ask-msg.user .ask-msg-avatar {
+  background: linear-gradient(135deg, #A8D0F0, #7CB8E4);
+}
+
+.ask-msg-content {
+  max-width: 80%;
+}
+
+.ask-msg-text {
+  padding: 0.625rem 0.875rem;
+  border-radius: 12px;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+.ask-msg.assistant .ask-msg-text {
+  background: rgba(74, 144, 217, 0.08);
+  color: #2C4A6E;
+  border-bottom-left-radius: 4px;
+}
+
+.ask-msg.user .ask-msg-text {
+  background: #4A90D9;
+  color: white;
+  border-bottom-right-radius: 4px;
+}
+
+.ask-dialog-input {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid rgba(74, 144, 217, 0.1);
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.ask-input-field {
+  flex: 1;
+  padding: 0.625rem 0.875rem;
+  border: 1.5px solid rgba(74, 144, 217, 0.2);
+  border-radius: 10px;
+  font-size: 0.875rem;
+  color: #2C4A6E;
+  background: white;
+  transition: border-color 0.2s;
+}
+
+.ask-input-field:focus {
+  outline: none;
+  border-color: #4A90D9;
+}
+
+.ask-input-field:disabled {
+  opacity: 0.6;
+}
+
+.ask-send-btn {
+  padding: 0.625rem 1.25rem;
+  background: linear-gradient(135deg, #4A90D9, #7CB8E4);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.ask-send-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(74, 144, 217, 0.3);
+}
+
+.ask-send-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ask-dialog-footer {
+  padding: 0.75rem 1rem;
+  border-top: 1px solid rgba(74, 144, 217, 0.08);
+  display: flex;
+  justify-content: center;
+}
+
+.continue-class-btn {
+  padding: 0.625rem 2rem;
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+  color: white;
+  border: none;
+  border-radius: 9999px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  box-shadow: 0 2px 8px rgba(34, 197, 94, 0.3);
+}
+
+.continue-class-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(34, 197, 94, 0.4);
 }
 
 /* 抢答弹窗 */
@@ -2811,16 +4070,6 @@ onUnmounted(() => {
 }
 
 /* Transitions */
-.egg-enter-active,
-.egg-leave-active {
-  transition: all 0.3s ease;
-}
-
-.egg-enter-from,
-.egg-leave-to {
-  opacity: 0;
-}
-
 .fade-enter-active,
 .fade-leave-active {
   transition: opacity 0.3s ease;
@@ -2849,5 +4098,61 @@ onUnmounted(() => {
   .avatar-widget {
     grid-column: span 2;
   }
+}
+
+/* ============ Toast通知 ============ */
+.toast-container {
+  position: fixed;
+  top: 70px;
+  right: 20px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 360px;
+}
+.toast-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: rgba(30, 30, 46, 0.95);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  cursor: pointer;
+  transition: all 0.3s;
+}
+.toast-item.success {
+  border-left: 3px solid #22c55e;
+}
+.toast-item.error {
+  border-left: 3px solid #ef4444;
+}
+.toast-item.info {
+  border-left: 3px solid #3b82f6;
+}
+.toast-icon {
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+.toast-text {
+  font-size: 0.8125rem;
+  color: #e2e8f0;
+  line-height: 1.4;
+}
+.toast-anim-enter-active {
+  transition: all 0.3s ease-out;
+}
+.toast-anim-leave-active {
+  transition: all 0.25s ease-in;
+}
+.toast-anim-enter-from {
+  opacity: 0;
+  transform: translateX(40px);
+}
+.toast-anim-leave-to {
+  opacity: 0;
+  transform: translateX(40px) scale(0.95);
 }
 </style>

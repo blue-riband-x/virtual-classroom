@@ -64,6 +64,11 @@ class Settings(BaseSettings):
     # DeepSeek模型选择
     DEEPSEEK_MODEL: str = "deepseek-chat"  # 或 "deepseek-coder"
     
+    # ========== 豆包（火山方舟）文生图配置 ==========
+    ARK_API_KEY: Optional[str] = None
+    ARK_BASE_URL: str = "https://ark.cn-beijing.volces.com/api/v3"
+    ARK_IMAGE_MODEL: str = "doubao-seedream-5-0-260128"  # 豆包文生图模型
+    
     # ========== 游戏化配置 ==========
     XP_PER_MINUTE: int = 10
     XP_PER_CORRECT_ANSWER: int = 50

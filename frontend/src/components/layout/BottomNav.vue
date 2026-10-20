@@ -46,10 +46,9 @@
             @click="selectedId = o.id"
           >
             <div class="sel-item-header">
-              <span class="sel-topic">{{ o.topic }}</span>
+              <span class="sel-topic">{{ o.title }}</span>
               <span class="sel-level">{{ levelMap[o.level] || o.level }}</span>
             </div>
-            <span class="sel-title">{{ o.title }}</span>
             <div class="sel-meta">
               <span>{{ o.module_count }} 模块</span>
               <span>{{ o.total_duration }} 分钟</span>
@@ -93,7 +92,19 @@ const openSelector = async () => {
     const res = await fetch('/api/v1/outline/my', {
       headers: { Authorization: `Bearer ${token}` }
     })
-    if (res.ok) outlines.value = await res.json()
+    if (res.ok) {
+      const json = await res.json()
+      // Java 后端返回 ApiResponse 格式: {code, data, message}
+      const rawList = Array.isArray(json) ? json : (json.data || [])
+      // modulesData 可能是 JSON 字符串，需要解析；字段名统一
+      outlines.value = rawList.map(o => ({
+        ...o,
+        modules_data: typeof o.modulesData === 'string' ? JSON.parse(o.modulesData) : (o.modulesData || o.modules_data || []),
+        // 同时提供 snake_case 别名，供模板使用
+        module_count: o.moduleCount || o.module_count || 0,
+        total_duration: o.totalDuration || o.total_duration || 0
+      }))
+    }
   } catch (e) {
     outlines.value = []
   }
@@ -206,7 +217,6 @@ const goCreateOutline = () => {
 .sel-item-header { display: flex; justify-content: space-between; align-items: center; }
 .sel-topic { font-size: 14px; font-weight: 600; color: #1a1a2e; }
 .sel-level { font-size: 11px; padding: 2px 8px; border-radius: 8px; background: rgba(74,144,217,0.1); color: #4A90D9; }
-.sel-title { font-size: 12px; color: #999; }
 .sel-meta { display: flex; gap: 12px; font-size: 11px; color: #bbb; }
 
 .sel-empty { text-align: center; padding: 20px; color: #999; }

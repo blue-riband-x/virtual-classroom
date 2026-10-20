@@ -39,6 +39,9 @@ python-jwt==3.3.4
 # ========== 阿里百炼DashScope ==========
 dashscope==1.17.0  # 阿里百炼SDK（embedding-v4）
 
+# ========== 豆包（火山方舟）文生图 ==========
+openai>=1.0.0  # OpenAI兼容格式调用火山方舟API
+
 # ========== 工具库 ==========
 python-dotenv==1.0.0  # 环境变量加载
 pyyaml==6.0.1

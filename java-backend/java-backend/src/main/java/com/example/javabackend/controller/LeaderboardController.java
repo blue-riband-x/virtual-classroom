@@ -8,7 +8,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 
 @RestController
-@RequestMapping("/api/leaderboard")
+@RequestMapping("/api/v1/leaderboard")
 public class LeaderboardController {
     private final UserMapper userMapper;
 

@@ -51,6 +51,7 @@ Thumbs.db
 
 # ===== 日志 =====
 *.log
+*log.txt
 logs/
 
 # ===== Java (如果 java-backend 后续开发) =====
@@ -60,5 +61,9 @@ target/
 *.glb
 model_3D/
 
+# ===== 运行时生成的板书图（7MB+，跑起来会重新生成） =====
+backend/static/boards/
+
 # ===== 其他 =====
 nul
+query

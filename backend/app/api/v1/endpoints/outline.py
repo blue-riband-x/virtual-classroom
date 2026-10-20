@@ -51,10 +51,10 @@ async def generate_outline_v3(
 ):
     uid = current_user["id"]
     session_id = request.session_id or f"outline_{uid}_{int(datetime.now().timestamp())}"
-    queue = await sse_manager.register(uid, session_id)
+    queue = await sse_manager.connect(uid, session_id)
 
     asyncio.create_task(
-        _do_generate(uid, session_id, request.message, request.topic, request.level, request.session_id)
+        _do_generate(uid, session_id, request.message, request.topic, request.level, request.session_id, queue)
     )
 
     return {
@@ -64,44 +64,66 @@ async def generate_outline_v3(
     }
 
 
-async def _do_generate(uid: int, session_id: str, message: str, topic: str, level: str, existing_session: str):
+async def _do_generate(uid: int, session_id: str, message: str, topic: str, level: str, existing_session: str, sse_queue):
     from app.db.session import async_session_factory
     try:
         result = await run_outline_workflow(
-            user_id=uid, topic=topic, message=message,
-            level=level, session_id=existing_session or session_id
+            user_id=uid, session_id=existing_session or session_id,
+            user_message=message, sse_queue=sse_queue,
+            topic=topic, level=level
         )
-        raw_text = result.get("raw_text", "")
-        outline_data = parse_outline_to_modules(raw_text, topic, level)
 
-        async with async_session_factory() as db:
-            now = datetime.now(timezone.utc)
-            outline = Outline(
-                user_id=uid,
-                title=outline_data.get("title", topic),
-                topic=_clean_topic_name(topic) or topic,
-                subject=_clean_topic_name(topic) or topic,
-                level=level,
-                total_duration=outline_data.get("total_duration", 0),
-                module_count=len(outline_data.get("modules", [])),
-                modules_data=outline_data.get("modules", []),
-                ai_generated=True,
-                status="completed",
-                created_at=now, updated_at=now
-            )
-            db.add(outline)
-            await db.commit()
-            await db.refresh(outline)
+        context = result.get("context", {})
+        should_generate = context.get("should_generate", False)
 
-            await sse_manager.send_event(uid, session_id, {
-                "event": "done",
-                "data": {
-                    "outline_id": outline.id,
-                    "title": outline.title,
-                    "modules": outline_data.get("modules", []),
-                    "total_duration": outline.total_duration
-                }
-            })
+        if should_generate:
+            # Step 4: 大纲已生成 → 解析并保存
+            raw_text = result.get("ai_output", "")
+            outline_data = parse_outline_to_modules(raw_text, topic, level)
+
+            async with async_session_factory() as db:
+                now = datetime.now(timezone.utc)
+                outline = Outline(
+                    user_id=uid,
+                    title=outline_data.get("title", topic),
+                    topic=_clean_topic_name(topic) or topic,
+                    subject=_clean_topic_name(topic) or topic,
+                    level=level,
+                    total_duration=outline_data.get("total_duration", 0),
+                    module_count=len(outline_data.get("modules", [])),
+                    modules_data=outline_data.get("modules", []),
+                    ai_generated=True,
+                    status="completed",
+                    created_at=now, updated_at=now
+                )
+                db.add(outline)
+                await db.commit()
+                await db.refresh(outline)
+
+                # 发送 outline_completed 事件（前端监听此事件来展示大纲）
+                await sse_manager.send_event(uid, session_id, {
+                    "event": "outline_completed",
+                    "data": {
+                        "outline_id": outline.id,
+                        "title": outline.title,
+                        "topic": outline.topic,
+                        "level": outline.level,
+                        "total_duration": outline.total_duration,
+                        "module_count": outline.module_count,
+                        "modules": outline_data.get("modules", []),
+                        "full_text": raw_text
+                    }
+                })
+        else:
+            # Step 1-3: 对话阶段，不需要保存大纲
+            # token/options 事件已由 outline_agent 直接通过 sse_queue 发送
+            pass
+
+        # 无论如何发送 done 事件关闭 SSE 流
+        await sse_manager.send_event(uid, session_id, {
+            "event": "done",
+            "data": {"status": "ok"}
+        })
     except Exception as e:
         logger.error(f"Outline generation failed: {e}")
         await sse_manager.send_event(uid, session_id, {
@@ -113,7 +135,19 @@ async def _do_generate(uid: int, session_id: str, message: str, topic: str, leve
 
 @router.get("/stream/{session_id}")
 async def outline_stream(session_id: str):
-    queue = sse_manager.get_queue(0, session_id)
+    # 查找该 session_id 对应的队列
+    queue = None
+    for uid_sessions in sse_manager.connections.values():
+        if session_id in uid_sessions:
+            queue = uid_sessions[session_id]
+            break
+
+    if queue is None:
+        from fastapi.responses import StreamingResponse
+        return StreamingResponse(
+            iter(["event: error\ndata: {\"message\": \"会话不存在\"}\n\n"]),
+            media_type="text/event-stream"
+        )
 
     async def event_gen():
         while True:

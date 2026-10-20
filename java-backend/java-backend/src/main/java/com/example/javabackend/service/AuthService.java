@@ -31,7 +31,7 @@ public class AuthService {
 
         String token = jwtUtil.generateToken(user.getId(), user.getUsername());
         Map<String, Object> result = new HashMap<>();
-        result.put("token", token);
+        result.put("access_token", token);
         result.put("user_id", user.getId());
         result.put("username", user.getUsername());
         result.put("nickname", user.getNickname());
@@ -46,14 +46,14 @@ public class AuthService {
 
         User user = new User();
         user.setUsername(req.getUsername());
-        user.setPasswordHash(req.getPassword()); // 开发环境明文，生产应加密
+        user.setPasswordHash(req.getPassword());
         user.setEmail(req.getEmail() != null ? req.getEmail() : req.getUsername() + "@test.com");
         user.setNickname(req.getNickname() != null ? req.getNickname() : req.getUsername());
         userMapper.insert(user);
 
         String token = jwtUtil.generateToken(user.getId(), user.getUsername());
         Map<String, Object> result = new HashMap<>();
-        result.put("token", token);
+        result.put("access_token", token);
         result.put("user_id", user.getId());
         result.put("username", user.getUsername());
         result.put("nickname", user.getNickname());

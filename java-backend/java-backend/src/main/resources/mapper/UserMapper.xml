@@ -34,6 +34,7 @@
             <if test="level != null">level = #{level},</if>
             <if test="streak != null">streak = #{streak},</if>
             <if test="totalLearningHours != null">total_learning_hours = #{totalLearningHours},</if>
+            <if test="totalLearningCount != null">total_learning_count = #{totalLearningCount},</if>
             <if test="xpToNextLevel != null">xp_to_next_level = #{xpToNextLevel},</if>
             <if test="avatar3dConfig != null">avatar_3d_config = #{avatar3dConfig},</if>
         </set>
@@ -42,6 +43,14 @@
 
     <update id="updateLastLogin">
         UPDATE users SET last_login = NOW(), updated_at = NOW() WHERE id = #{id}
+    </update>
+
+    <update id="incrementLearningCount">
+        UPDATE users SET total_learning_count = COALESCE(total_learning_count, 0) + 1, updated_at = NOW() WHERE id = #{id}
+    </update>
+
+    <update id="incrementXp">
+        UPDATE users SET xp = COALESCE(xp, 0) + #{amount}, updated_at = NOW() WHERE id = #{id}
     </update>
 
     <select id="findTopByXp" resultType="com.example.javabackend.entity.User">

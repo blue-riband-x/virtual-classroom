@@ -10,7 +10,7 @@ import java.util.List;
 import java.util.Map;
 
 @RestController
-@RequestMapping("/api/outline")
+@RequestMapping("/api/v1/outline")
 public class OutlineController {
     private final OutlineService outlineService;
 

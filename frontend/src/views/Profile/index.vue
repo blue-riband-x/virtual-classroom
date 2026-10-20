@@ -17,7 +17,7 @@
           <p class="profile-meta">
             <span>{{ userStore.userInfo.grade }}</span>
             <span class="dot">·</span>
-            <span>{{ userStore.userInfo.subjects.join('、') }}</span>
+            <span>{{ (userStore.userInfo.subjects || []).join('、') }}</span>
           </p>
           <div class="profile-stats">
             <div class="stat">
@@ -29,7 +29,7 @@
               <span class="stat-label">成就数</span>
             </div>
             <div class="stat">
-              <span class="stat-value">{{ userStore.learningHistory.length }}</span>
+              <span class="stat-value">{{ userStore.userInfo.totalLearningCount || 0 }}</span>
               <span class="stat-label">学习次数</span>
             </div>
           </div>
@@ -103,7 +103,12 @@
                 @click.stop
                 maxlength="100"
               />
-              <span class="oc-level">{{ levelMap[o.level] || o.level }}</span>
+              <div class="oc-actions">
+                <span class="oc-level">{{ levelMap[o.level] || o.level }}</span>
+                <button class="oc-delete-btn" :class="{ confirming: deletingOutlineId === o.id }" @click.stop="confirmDeleteOutline(o)" title="删除大纲">
+                  {{ deletingOutlineId === o.id ? '确认?' : '×' }}
+                </button>
+              </div>
             </div>
             <div class="oc-meta">
               <span>{{ o.module_count }} 模块</span>
@@ -156,6 +161,15 @@
             <div class="setting-info">
               <span class="setting-name">教师风格</span>
               <span class="setting-value">{{ teacherStyleText }}</span>
+            </div>
+            <span class="setting-arrow">→</span>
+          </div>
+          <!-- AI学伴 -->
+          <div class="setting-item" @click="showCompanionPicker = true">
+            <span class="setting-icon">🤝</span>
+            <div class="setting-info">
+              <span class="setting-name">AI学伴</span>
+              <span class="setting-value">{{ companionText }}</span>
             </div>
             <span class="setting-arrow">→</span>
           </div>
@@ -274,12 +288,61 @@
       </div>
     </transition>
 
+    <!-- AI学伴选择弹窗 -->
+    <transition name="fade">
+      <div v-if="showCompanionPicker" class="modal-overlay" @click.self="showCompanionPicker = false">
+        <div class="modal-content">
+          <h3 class="modal-title">选择AI学伴</h3>
+          <p class="modal-subtitle">可多选，也可不选。学伴会在课堂上陪你一起学习</p>
+          <div class="style-options">
+            <div
+              class="style-option"
+              :class="{ active: tempCompanions.includes('scholar') }"
+              @click="toggleCompanion('scholar')"
+            >
+              <span class="style-emoji">🎓</span>
+              <div class="style-info">
+                <span class="style-name">学霸型 · 小明</span>
+                <span class="style-desc">知识丰富，回答正确率高，偶尔分享拓展知识</span>
+              </div>
+              <span v-if="tempCompanions.includes('scholar')" class="style-check">✓</span>
+            </div>
+            <div
+              class="style-option"
+              :class="{ active: tempCompanions.includes('social') }"
+              @click="toggleCompanion('social')"
+            >
+              <span class="style-emoji">😎</span>
+              <div class="style-info">
+                <span class="style-name">显眼包 · 小乐</span>
+                <span class="style-desc">爱互动爱提问，课堂气氛担当，经常发表看法</span>
+              </div>
+              <span v-if="tempCompanions.includes('social')" class="style-check">✓</span>
+            </div>
+            <div
+              class="style-option"
+              :class="{ active: tempCompanions.includes('introvert') }"
+              @click="toggleCompanion('introvert')"
+            >
+              <span class="style-emoji">🤫</span>
+              <div class="style-info">
+                <span class="style-name">内向型 · 小静</span>
+                <span class="style-desc">性格内向，不主动说话，但偶尔会小声发表见解</span>
+              </div>
+              <span v-if="tempCompanions.includes('introvert')" class="style-check">✓</span>
+            </div>
+          </div>
+          <button class="modal-close" @click="saveCompanions">确定</button>
+        </div>
+      </div>
+    </transition>
+
     <BottomNav />
   </div>
 </template>
 
 <script setup>
-import { computed, ref, onMounted, nextTick } from 'vue'
+import { computed, ref, onMounted, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import Navbar from '../../components/layout/Navbar.vue'
 import BottomNav from '../../components/layout/BottomNav.vue'
@@ -306,6 +369,42 @@ const selectTeacherStyle = (style) => {
   localStorage.setItem('teacherStyle', style)
 }
 
+// AI学伴
+const showCompanionPicker = ref(false)
+const tempCompanions = ref([])
+const companionMap = {
+  scholar: '学霸型·小明',
+  social: '显眼包·小乐',
+  introvert: '内向型·小静'
+}
+const companionText = computed(() => {
+  const list = userStore.settings.studyCompanions || []
+  if (list.length === 0) return '未选择'
+  return list.map(k => companionMap[k]).join('、')
+})
+
+// 打开学伴弹窗时，初始化临时选择
+watch(showCompanionPicker, (val) => {
+  if (val) {
+    tempCompanions.value = [...(userStore.settings.studyCompanions || [])]
+  }
+})
+
+const toggleCompanion = (type) => {
+  const idx = tempCompanions.value.indexOf(type)
+  if (idx >= 0) {
+    tempCompanions.value.splice(idx, 1)
+  } else {
+    tempCompanions.value.push(type)
+  }
+}
+
+const saveCompanions = () => {
+  userStore.settings.studyCompanions = [...tempCompanions.value]
+  localStorage.setItem('studyCompanions', JSON.stringify(tempCompanions.value))
+  showCompanionPicker.value = false
+}
+
 // 我的大纲
 const myOutlines = ref([])
 const selectedOutline = ref(null)
@@ -320,7 +419,16 @@ const fetchOutlines = async () => {
     const res = await fetch('/api/v1/outline/my', {
       headers: { Authorization: `Bearer ${token}` }
     })
-    if (res.ok) myOutlines.value = await res.json()
+    if (res.ok) {
+      const json = await res.json()
+      // Java 后端返回 ApiResponse 格式: {code, data, message}
+      const rawList = Array.isArray(json) ? json : (json.data || [])
+      // modulesData 可能是 JSON 字符串，需要解析
+      myOutlines.value = rawList.map(o => ({
+        ...o,
+        modules_data: typeof o.modulesData === 'string' ? JSON.parse(o.modulesData) : (o.modulesData || o.modules_data || [])
+      }))
+    }
   } catch (e) { /* 静默 */ }
 }
 
@@ -351,6 +459,35 @@ const saveTitle = async (o) => {
     }
   } catch (e) { /* ignore */ }
   editingOutlineId.value = null
+}
+
+// 删除大纲
+const deletingOutlineId = ref(null)
+const confirmDeleteOutline = (o) => {
+  if (deletingOutlineId.value === o.id) {
+    // 第二次点击，执行删除
+    deleteOutline(o)
+  } else {
+    // 第一次点击，显示确认
+    deletingOutlineId.value = o.id
+    setTimeout(() => { deletingOutlineId.value = null }, 3000)
+  }
+}
+const deleteOutline = async (o) => {
+  try {
+    const token = localStorage.getItem('token') || ''
+    const res = await fetch(`/api/v1/outline/${o.id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    if (res.ok) {
+      myOutlines.value = myOutlines.value.filter(item => item.id !== o.id)
+      if (selectedOutline.value?.id === o.id) {
+        selectedOutline.value = null
+      }
+      deletingOutlineId.value = null
+    }
+  } catch (e) { /* ignore */ }
 }
 
 // ─── 模块状态管理（异步生成课程） ───
@@ -893,6 +1030,14 @@ const getScoreClass = (score) => {
   text-align: center;
 }
 
+.modal-subtitle {
+  font-size: 13px;
+  color: #999;
+  text-align: center;
+  margin-top: -14px;
+  margin-bottom: 16px;
+}
+
 .style-options {
   display: flex;
   flex-direction: column;
@@ -1064,6 +1209,53 @@ const getScoreClass = (score) => {
   gap: 12px;
   font-size: 11px;
   color: var(--text-muted);
+}
+
+.oc-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.oc-delete-btn {
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(220, 53, 69, 0.08);
+  color: #dc3545;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  opacity: 0;
+  transform: scale(0.8);
+}
+.outline-card:hover .oc-delete-btn {
+  opacity: 1;
+  transform: scale(1);
+}
+.oc-delete-btn:hover {
+  background: #dc3545;
+  color: #fff;
+}
+.outline-card:has(.oc-delete-btn.confirming) {
+  border-color: #dc3545;
+  background: rgba(220, 53, 69, 0.05);
+}
+.oc-delete-btn.confirming {
+  opacity: 1;
+  transform: scale(1);
+  background: #dc3545;
+  color: #fff;
+  width: auto;
+  border-radius: 11px;
+  padding: 0 8px;
+  font-size: 11px;
 }
 
 .outline-modules {

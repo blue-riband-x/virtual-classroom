@@ -5,8 +5,10 @@ Virtual Classroom Backend with Multi-Agent System
 from datetime import datetime
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 import logging
+import os
 
 from app.core.config import settings
 from app.db.base import Base
@@ -176,6 +178,12 @@ async def root():
 
 # 注册API路由
 app.include_router(api_router, prefix=settings.API_V1_STR)
+
+# ========== 静态文件服务（板书图片等） ==========
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+boards_dir = os.path.join(static_dir, "boards")
+os.makedirs(boards_dir, exist_ok=True)
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
 # ========== 启动入口 ==========

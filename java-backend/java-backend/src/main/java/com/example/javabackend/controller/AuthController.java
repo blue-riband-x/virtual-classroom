@@ -5,12 +5,13 @@ import com.example.javabackend.dto.LoginRequest;
 import com.example.javabackend.dto.RegisterRequest;
 import com.example.javabackend.service.AuthService;
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
 
 @RestController
-@RequestMapping("/api/auth")
+@RequestMapping("/api/v1/auth")
 public class AuthController {
     private final AuthService authService;
 
@@ -19,26 +20,28 @@ public class AuthController {
     }
 
     @PostMapping("/login")
-    public ApiResponse<Map<String, Object>> login(@RequestBody LoginRequest req) {
+    public ResponseEntity<?> login(@RequestBody LoginRequest req) {
         try {
-            return ApiResponse.ok(authService.login(req));
+            return ResponseEntity.ok(ApiResponse.ok(authService.login(req)));
         } catch (RuntimeException e) {
-            return ApiResponse.error(400, e.getMessage());
+            return ResponseEntity.status(401)
+                    .body(ApiResponse.error(401, e.getMessage()));
         }
     }
 
     @PostMapping("/register")
-    public ApiResponse<Map<String, Object>> register(@RequestBody RegisterRequest req) {
+    public ResponseEntity<?> register(@RequestBody RegisterRequest req) {
         try {
-            return ApiResponse.ok(authService.register(req));
+            return ResponseEntity.ok(ApiResponse.ok(authService.register(req)));
         } catch (RuntimeException e) {
-            return ApiResponse.error(400, e.getMessage());
+            return ResponseEntity.status(400)
+                    .body(ApiResponse.error(400, e.getMessage()));
         }
     }
 
     @GetMapping("/me")
-    public ApiResponse<?> me(HttpServletRequest request) {
+    public ResponseEntity<?> me(HttpServletRequest request) {
         Long userId = (Long) request.getAttribute("userId");
-        return ApiResponse.ok(authService.getCurrentUser(userId));
+        return ResponseEntity.ok(ApiResponse.ok(authService.getCurrentUser(userId)));
     }
 }

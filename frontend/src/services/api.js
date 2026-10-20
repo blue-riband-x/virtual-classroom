@@ -1,15 +1,22 @@
 /**
  * API服务 - HTTP客户端
- * 统一管理所有后端API请求
+ * 统一处理 Java ApiResponse 信封：{ code, message, data }
  */
-import { useUserStore } from '@/stores/index'
-
 const BASE_URL = '/api/v1'
 
-// 请求拦截器
 class ApiClient {
   constructor() {
     this.token = localStorage.getItem('token') || ''
+  }
+
+  /** 401 时跳转登录页 */
+  _handleUnauthorized() {
+    this.token = ''
+    localStorage.removeItem('token')
+    // 避免重复跳转
+    if (window.location.pathname !== '/login') {
+      window.location.href = '/login'
+    }
   }
 
   setToken(token) {
@@ -31,19 +38,45 @@ class ApiClient {
       ...options
     }
 
-    const response = await fetch(`${BASE_URL}${url}`, config)
-
-    if (!response.ok) {
-      if (response.status === 401) {
-        this.clearToken()
-        throw new Error('认证过期，请重新登录')
-      }
-      const error = await response.json().catch(() => ({ message: `请求失败: ${response.status}` }))
-      throw new Error(error.message || error.detail || '请求失败')
+    let response
+    try {
+      response = await fetch(`${BASE_URL}${url}`, config)
+    } catch (err) {
+      throw new Error('网络连接失败，请检查网络')
     }
 
-    const data = await response.json()
-    return data
+    // HTTP 层面错误
+    if (!response.ok) {
+      if (response.status === 401) {
+        this._handleUnauthorized()
+      }
+      // 尝试解析后端返回的错误消息
+      var errMsg = ''
+      try {
+        var errData = await response.json()
+        errMsg = errData.message || errData.detail || ''
+      } catch (e) { /* ignore parse error */ }
+      throw new Error(errMsg || '请求失败(' + response.status + ')')
+    }
+
+    // 解析 JSON 响应体
+    var body
+    try {
+      body = await response.json()
+    } catch (e) {
+      throw new Error('服务器返回数据格式异常')
+    }
+
+    // 兼容 ApiResponse 信封：{ code, message, data }
+    if (typeof body.code === 'number' && 'data' in body) {
+      if (body.code !== 200) {
+        throw new Error(body.message || '操作失败')
+      }
+      return body.data
+    }
+
+    // 直返格式
+    return body
   }
 
   get(url, params) {
@@ -52,17 +85,11 @@ class ApiClient {
   }
 
   post(url, body) {
-    return this.request(url, {
-      method: 'POST',
-      body: JSON.stringify(body)
-    })
+    return this.request(url, { method: 'POST', body: JSON.stringify(body) })
   }
 
   put(url, body) {
-    return this.request(url, {
-      method: 'PUT',
-      body: JSON.stringify(body)
-    })
+    return this.request(url, { method: 'PUT', body: JSON.stringify(body) })
   }
 
   delete(url) {
@@ -75,15 +102,21 @@ export const api = new ApiClient()
 // ========== 认证API ==========
 export const authAPI = {
   async login(username, password) {
-    const res = await api.post('/auth/login', { username, password })
-    if (res.data?.access_token) {
-      api.setToken(res.data.access_token)
+    const data = await api.post('/auth/login', { username, password })
+    if (!data || !data.access_token) {
+      throw new Error('登录返回数据异常')
     }
-    return res.data
+    api.setToken(data.access_token)
+    return data
   },
 
-  async register(data) {
-    return await api.post('/auth/register', data)
+  async register(form) {
+    const data = await api.post('/auth/register', form)
+    if (!data || !data.access_token) {
+      throw new Error('注册返回数据异常')
+    }
+    api.setToken(data.access_token)
+    return data
   },
 
   async getMe() {
@@ -97,20 +130,11 @@ export const authAPI = {
 
 // ========== 用户API ==========
 export const userAPI = {
-  async getProfile() {
-    const res = await api.get('/users/profile')
-    return res.data
-  },
-
-  async getHistory() {
-    const res = await api.get('/users/history')
-    return res.data
-  },
-
-  async getAchievements() {
-    const res = await api.get('/users/achievements')
-    return res.data
-  }
+  async getProfile() { return await api.get('/users/profile') },
+  async getHistory() { return await api.get('/users/history') },
+  async getAchievements() { return await api.get('/users/achievements') },
+  async incrementLearningCount() { return await api.post('/users/learning-count') },
+  async addXP(amount) { return await api.post('/users/add-xp', { amount }) }
 }
 
 // ========== AI交互API ==========
@@ -120,31 +144,15 @@ export const aiAPI = {
     const body = { message, session_id: sessionId }
     if (agentType) body.agent_type = agentType
     if (teacherStyle) body.teacher_style = teacherStyle
-    const res = await api.post(`/ai/tutor/${sessionId}`, body)
-    return res.data || res
+    return await api.post(`/ai/tutor/${sessionId}`, body)
   },
-
-  async listAgents() {
-    const res = await api.get('/ai/agents')
-    return res.data || res
-  },
-
+  async listAgents() { return await api.get('/ai/agents') },
   async startPipeline(message, agentSequence) {
     const sessionId = `pipeline_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
-    const res = await api.post(`/ai/pipeline/${sessionId}`, {
-      message,
-      agent_sequence: agentSequence,
-      session_id: sessionId
-    })
-    return res.data || res
+    return await api.post(`/ai/pipeline/${sessionId}`, { message, agent_sequence: agentSequence, session_id: sessionId })
   },
-
   async switchAgent(sessionId, agentType) {
-    const res = await api.post(`/ai/switch/${sessionId}`, {
-      session_id: sessionId,
-      agent_type: agentType
-    })
-    return res.data || res
+    return await api.post(`/ai/switch/${sessionId}`, { session_id: sessionId, agent_type: agentType })
   }
 }
 

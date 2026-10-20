@@ -62,6 +62,7 @@ class ModuleContent(BaseModel):
     module_name = Column(String(200), nullable=False, comment="模块名称")
     content = Column(Text, nullable=True, comment="AI生成的完整教学内容(Markdown)")
     teacher_style = Column(String(50), default="default", comment="教师风格")
+    board_data = Column(JSON, nullable=True, comment="板书智能体生成的板书序列数据")
     status = Column(String(20), default="pending", comment="状态: pending/generating/completed/failed")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), comment="创建时间")
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc), comment="更新时间")

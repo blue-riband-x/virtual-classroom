@@ -15,7 +15,8 @@ export const useUserStore = defineStore('user', {
       xp: 0,
       xpToNextLevel: 0,
       streak: 0,
-      totalLearningHours: 0
+      totalLearningHours: 0,
+      totalLearningCount: 0
     },
     // 学习历史
     learningHistory: [],
@@ -40,7 +41,8 @@ export const useUserStore = defineStore('user', {
       voiceSpeed: 'medium',
       fontSize: 'medium',
       notifications: true,
-      teacherStyle: 'default'  // 'default' | 'humorous' | 'rigorous'
+      teacherStyle: localStorage.getItem('teacherStyle') || 'default',
+      studyCompanions: JSON.parse(localStorage.getItem('studyCompanions') || '[]')
     }
   }),
   getters: {
@@ -95,12 +97,27 @@ export const useUserStore = defineStore('user', {
     async login(username, password) {
       try {
         const data = await authAPI.login(username, password)
+        if (!data) throw new Error('登录失败：无返回数据')
         this.token = data.access_token
-        this.userInfo = { ...this.userInfo, ...data.user }
         localStorage.setItem('token', data.access_token)
+        // 从登录响应中直接获取基本信息
+        this.userInfo = {
+          ...this.userInfo,
+          id: data.user_id || 0,
+          nickname: data.nickname || data.username || '用户',
+          username: data.username || '',
+          level: data.level || 1,
+          xp: data.xp || 0,
+          streak: data.streak || 0,
+          totalLearningHours: data.totalLearningHours || 0,
+          totalLearningCount: data.totalLearningCount || 0,
+          xpToNextLevel: data.xpToNextLevel || 100
+        }
+        // 异步拉取完整用户数据（不阻塞跳转）
+        this.fetchProfile().catch(() => {})
         return true
       } catch (err) {
-        this.error = err.message
+        this.error = err.message || '登录失败'
         return false
       }
     },
@@ -112,7 +129,7 @@ export const useUserStore = defineStore('user', {
       localStorage.removeItem('token')
       this.userInfo = {
         id: 0, nickname: '未登录', avatar: '👨‍🎓', phone: '', grade: '',
-        subjects: [], level: 0, xp: 0, xpToNextLevel: 0, streak: 0, totalLearningHours: 0
+        subjects: [], level: 0, xp: 0, xpToNextLevel: 0, streak: 0, totalLearningHours: 0, totalLearningCount: 0
       }
       this.learningHistory = []
       this.achievements = []
@@ -136,9 +153,32 @@ export const useUserStore = defineStore('user', {
         this.userInfo.level++
         this.userInfo.xp -= this.userInfo.xpToNextLevel
         this.userInfo.xpToNextLevel = Math.floor(this.userInfo.xpToNextLevel * 1.2)
-        return true
       }
-      return false
+      // 异步持久化到后端，失败时静默处理
+      userAPI.addXP(amount).then(data => {
+        if (data) {
+          // 用后端返回的真实值覆盖，避免前后端升级计算不一致
+          this.userInfo.xp = data.xp ?? this.userInfo.xp
+          this.userInfo.level = data.level ?? this.userInfo.level
+          this.userInfo.xpToNextLevel = data.xpToNextLevel ?? this.userInfo.xpToNextLevel
+        }
+      }).catch(err => {
+        console.warn('经验值同步失败:', err.message)
+      })
+    },
+
+    async incrementLearningCount() {
+      try {
+        const data = await userAPI.incrementLearningCount()
+        if (data?.totalLearningCount !== undefined) {
+          this.userInfo.totalLearningCount = data.totalLearningCount
+        } else {
+          this.userInfo.totalLearningCount = (this.userInfo.totalLearningCount || 0) + 1
+        }
+      } catch (err) {
+        console.warn('递增学习次数失败:', err.message)
+        this.userInfo.totalLearningCount = (this.userInfo.totalLearningCount || 0) + 1
+      }
     },
 
     updateExpression(expr) {

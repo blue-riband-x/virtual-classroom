@@ -15,6 +15,7 @@ public class User {
     private Integer level;
     private Integer streak;
     private Double totalLearningHours;
+    private Integer totalLearningCount;
     private Integer xpToNextLevel;
     private Boolean isActive;
     private Boolean isSuperuser;
@@ -53,6 +54,9 @@ public class User {
 
     public Double getTotalLearningHours() { return totalLearningHours; }
     public void setTotalLearningHours(Double totalLearningHours) { this.totalLearningHours = totalLearningHours; }
+
+    public Integer getTotalLearningCount() { return totalLearningCount; }
+    public void setTotalLearningCount(Integer totalLearningCount) { this.totalLearningCount = totalLearningCount; }
 
     public Integer getXpToNextLevel() { return xpToNextLevel; }
     public void setXpToNextLevel(Integer xpToNextLevel) { this.xpToNextLevel = xpToNextLevel; }

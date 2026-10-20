@@ -317,6 +317,13 @@ async def _handle_step_topic(
         if sse_queue:
             await sse_queue.put({"event": "token", "data": {"token": char}})
 
+    # 发送 step 事件更新进度指示器
+    if sse_queue:
+        await sse_queue.put({
+            "event": "step",
+            "data": {"step": 1}
+        })
+
     # 发送选项事件，让前端渲染可点击按钮
     if sse_queue:
         await sse_queue.put({
@@ -428,6 +435,13 @@ async def _handle_step_time(
         collected_info["time"] = user_message.strip()[:60]
 
     new_step = STEP_GENERATE
+
+    # 发送 step 事件更新进度指示器
+    if sse_queue:
+        await sse_queue.put({
+            "event": "step",
+            "data": {"step": 3}
+        })
 
     # 提示即将生成
     intro = "好的，信息收集完毕！正在为你生成学习大纲...\n\n"

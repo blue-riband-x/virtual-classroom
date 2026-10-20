@@ -70,8 +70,16 @@ class SSEManager:
         if user_id not in self.connections:
             self.connections[user_id] = {}
         
+        # 清理同一会话的旧连接（可能前端断开后重连）
+        if session_id in self.connections[user_id]:
+            old_queue = self.connections[user_id][session_id]
+            try:
+                old_queue.put_nowait(None)  # 通知旧消费者退出
+            except asyncio.QueueFull:
+                pass
+        
         # 创建新队列
-        queue = asyncio.Queue(maxsize=100)  # 限制队列大小，防止内存溢出
+        queue = asyncio.Queue(maxsize=200)
         self.connections[user_id][session_id] = queue
         
         logger.info(f"🟢 SSE connected: user={user_id}, session={session_id}")
@@ -136,13 +144,33 @@ class SSEManager:
         
         queue = self.connections[user_id][session_id]
         
+        # None 是终止信号
+        if event is None:
+            try:
+                queue.put_nowait(None)
+            except asyncio.QueueFull:
+                # 队列满时强制丢弃一个旧事件
+                try:
+                    queue.get_nowait()
+                    queue.put_nowait(None)
+                except:
+                    pass
+            return True
+        
         try:
             # 非阻塞放入队列
             queue.put_nowait(event)
             return True
         except asyncio.QueueFull:
-            logger.warning(f"⚠️ SSE queue full for user={user_id}, session={session_id}")
-            return False
+            # 队列满时：丢弃最旧的事件，腾出空间给新事件
+            try:
+                queue.get_nowait()  # 丢弃一个旧事件
+                queue.put_nowait(event)  # 放入新事件
+                logger.debug(f"📦 SSE queue overflow, dropped oldest event for user={user_id}, session={session_id}")
+                return True
+            except:
+                logger.warning(f"⚠️ SSE queue full and cannot drain for user={user_id}, session={session_id}")
+                return False
     
     async def broadcast_to_user(self, user_id: int, event: dict):
         """
@@ -190,7 +218,7 @@ class SSEManager:
     
     async def start_heartbeat(self, interval: int = 30):
         """
-        启动心跳任务（保持SSE连接）
+        启动心跳任务（保持SSE连接 + 清理过期会话）
         
         Args:
             interval: 心跳间隔（秒）
@@ -202,6 +230,9 @@ class SSEManager:
             """心跳协程"""
             while True:
                 await asyncio.sleep(interval)
+                
+                # 清理过期/满队列的会话
+                self._cleanup_stale_sessions()
                 
                 if not self.connections:
                     continue
@@ -223,6 +254,22 @@ class SSEManager:
         self._heartbeat_task = asyncio.create_task(_heartbeat())
         logger.info(f"💓 SSE heartbeat started (interval={interval}s)")
     
+    def _cleanup_stale_sessions(self):
+        """清理过期/满队列的会话（队列满说明没有消费者在读取）"""
+        stale_sessions = []
+        for user_id, sessions in self.connections.items():
+            for session_id, queue in sessions.items():
+                # 队列超过 80% 满且不是刚创建的，视为过期
+                if queue.qsize() >= int(queue.maxsize * 0.8):
+                    stale_sessions.append((user_id, session_id))
+        
+        for user_id, session_id in stale_sessions:
+            self.disconnect(user_id, session_id)
+            logger.info(f"🧹 Cleaned up stale SSE session: user={user_id}, session={session_id}")
+        
+        if stale_sessions:
+            logger.info(f"🧹 Cleaned up {len(stale_sessions)} stale sessions, remaining: {self._count_total_connections()}")
+
     async def stop_heartbeat(self):
         """停止心跳任务"""
         if self._heartbeat_task is not None:
